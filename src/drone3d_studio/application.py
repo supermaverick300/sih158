@@ -10,7 +10,7 @@ import sys
 
 import cv2
 from PySide6.QtCore import Qt, QTimer, QSettings, QSize
-from PySide6.QtGui import QAction, QImage, QPixmap, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QImage, QPixmap, QIcon, QKeySequence, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QLineEdit,
@@ -77,6 +77,11 @@ def row(*widgets):
 class Studio(QMainWindow):
     def __init__(self):
         super().__init__()
+        # The Windows offscreen Qt platform does not enumerate system fonts.
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen" and os.name == "nt":
+            fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+            for name in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf"):
+                QFontDatabase.addApplicationFont(str(fonts / name))
         self.setWindowTitle("Drone 3D Studio")
         self.resize(1360, 880)
         self.project, self.root = None, None
@@ -99,7 +104,7 @@ class Studio(QMainWindow):
         layout = QHBoxLayout(shell)
         layout.setContentsMargins(12, 12, 12, 12)
         sidebar = QVBoxLayout()
-        logo = QLabel("◈  DRONE 3D\n     STUDIO")
+        logo = QLabel("DRONE 3D\nSTUDIO")
         logo.setStyleSheet("font-size:20px;font-weight:700;color:#68e1c4;padding:15px 5px")
         sidebar.addWidget(logo)
         self.nav = QListWidget()
@@ -128,6 +133,8 @@ class Studio(QMainWindow):
         self.build_scene()
         self.build_json()
         self.build_settings()
+        for control in (self.interval, self.blur, self.duplicate_threshold, self.maximum):
+            control.valueChanged.connect(self.analysis_settings_changed)
         self.nav.currentRowChanged.connect(self.navigate)
         self.nav.setCurrentRow(0)
         self.apply_theme(self.defaults.theme)
@@ -311,7 +318,9 @@ class Studio(QMainWindow):
             self.setting_widgets[key] = widget
             form.addRow(labels[key], widget)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Frame interval, sharpness, duplicate threshold and maximum samples are configured on the Video page."))
+        extraction_help = QLabel("Frame interval, sharpness, duplicate threshold and maximum samples are configured on the Video page.")
+        extraction_help.setWordWrap(True)
+        layout.addWidget(extraction_help)
         layout.addLayout(row(button("Choose COLMAP executable…", self.choose_executable), button("Check COLMAP installation", self.check_colmap)))
         info = QLabel("Demo: procedural geometry, always available.\nCOLMAP: optional external software; this integration produces a real sparse point cloud on CPU. No dense mesh or textures. Download: https://github.com/colmap/colmap/releases")
         info.setWordWrap(True)
@@ -366,6 +375,10 @@ class Studio(QMainWindow):
             root = Path(parent) / folder
             project = store.create(root, name, description)
             project.settings = self.defaults.model_copy(deep=True)
+            try:
+                project.analysis = AnalysisConfig.model_validate_json(self.prefs.value("analysis_defaults", "{}"))
+            except ValueError:
+                pass
             self.activate(root, project)
             self.changed()
         except Exception as exc:
@@ -402,13 +415,14 @@ class Studio(QMainWindow):
         self.canvas.geometry.clear()
         self.project_name.setText(project.name)
         self.description.setPlainText(project.description)
-        self.interval.setValue(project.analysis.interval)
-        self.blur.setValue(project.analysis.blur_threshold)
-        self.maximum.setValue(project.analysis.max_frames)
-        self.duplicate_threshold.setValue(project.analysis.duplicate_threshold)
+        for control, value in ((self.interval, project.analysis.interval), (self.blur, project.analysis.blur_threshold), (self.maximum, project.analysis.max_frames), (self.duplicate_threshold, project.analysis.duplicate_threshold)):
+            control.blockSignals(True)
+            control.setValue(value)
+            control.blockSignals(False)
         self.load_settings_widgets(project.settings)
         self.apply_theme(project.settings.theme)
         self.canvas.background = project.settings.background
+        logging.getLogger().setLevel(project.settings.logging_level)
         self.refresh()
         self.refresh_frames()
         self.remember(root)
@@ -524,6 +538,7 @@ class Studio(QMainWindow):
     def save_current(self):
         if self.project and self.root:
             store.save(self.root, self.project)
+            store.atomic_write(self.root / "source" / "video_reference.json", self.project.video.model_dump_json(indent=2) if self.project.video else "null")
             self.refresh()
 
     def manual_save(self):
@@ -704,6 +719,11 @@ class Studio(QMainWindow):
         path = store.resolve(self.root, self.project.video.path)
         self.run_job(lambda cancel, progress: video.analyze(path, self.root, config, cancel, progress), self.analysis_done)
         self.changed()
+
+    def analysis_settings_changed(self):
+        if self.project:
+            self.project.analysis = AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value())
+            self.autosave.trigger(self.project.settings.autosave_ms)
 
     def analysis_done(self, result):
         self.project.frames, self.project.analysis_seconds = result
@@ -911,6 +931,8 @@ class Studio(QMainWindow):
             return
         self.defaults = settings
         self.prefs.setValue("settings", settings.model_dump_json())
+        analysis_defaults = AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value())
+        self.prefs.setValue("analysis_defaults", analysis_defaults.model_dump_json())
         self.apply_theme(settings.theme)
         self.canvas.background = settings.background
         self.canvas.update()

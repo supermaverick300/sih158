@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "0d0454ec64c84512a954478afaaefb94",
+  "name": "Harbor flight · Demo",
+  "description": "A procedural scene for testing inspection and transforms. This is not a photogrammetry reconstruction.",
+  "created": "2026-09-06T05:13:47.175081+00:00",
+  "modified": "2026-09-06T05:13:47.175081+00:00",
+  "video": null,
+  "analysis": {
+    "interval": 1.0,
+    "blur_threshold": 35.0,
+    "duplicate_threshold": 2.5,
+    "max_frames": 150
+  },
+  "frames": [],
+  "analysis_seconds": 0.0,
+  "status": "No video",
+  "reconstruction_status": "Not started",
+  "models": [],
+  "settings": {
+    "theme": "Dark",
+    "autosave_ms": 800,
+    "default_project_directory": "",
+    "reconstruction_mode": "Demo",
+    "executable": "",
+    "background": "#101923",
+    "logging_level": "INFO"
+  },
+  "logs": []
+}

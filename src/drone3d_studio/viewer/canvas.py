@@ -114,15 +114,15 @@ class SceneCanvas(QWidget):
                     triangles.append((float(depth[face].mean()), polygon, tint, model.id))
             else:
                 points.extend((float(d), QPointF(*p), color, model.id) for p, d in zip(screen, depth) if d > .05)
-        for depth, polygon, color, key in sorted(triangles, key=lambda x: -x[0]):
-            painter.setPen(QPen(color.darker(115), .4))
-            painter.setBrush(color)
-            painter.drawPolygon(polygon)
-            self.hit.append((depth, polygon, key))
-        for depth, point, color, key in sorted(points, key=lambda x: -x[0]):
-            painter.setPen(QPen(color, 3))
-            painter.drawPoint(point)
-            self.hit.append((depth, point, key))
+        for depth, shape, color, key in sorted(triangles + points, key=lambda x: -x[0]):
+            if isinstance(shape, QPolygonF):
+                painter.setPen(QPen(color.darker(115), .4))
+                painter.setBrush(color)
+                painter.drawPolygon(shape)
+            else:
+                painter.setPen(QPen(color, 3))
+                painter.drawPoint(shape)
+            self.hit.append((depth, shape, key))
         painter.setPen(QColor("#a2b2c7"))
         painter.drawText(18, 27, "SCENE / CPU VIEWPORT")
         painter.drawText(18, self.height() - 18, "Orbit: drag   •   Pan: right drag   •   Zoom: wheel   •   Select: click")
