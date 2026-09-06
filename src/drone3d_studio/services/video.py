@@ -57,16 +57,44 @@ def write_image(path: Path, frame):
     encoded.tofile(str(path))  # Unicode-safe on Windows.
 
 
-def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress):
+def quality(frame):
+    gray = gray_frame(frame)
+    count = len(cv2.ORB_create(nfeatures=1000).detect(gray, None))
+    clipped = float(np.mean((gray < 8) | (gray > 247)))
+    return count, clipped
+
+
+def motion(previous, current):
+    if previous is None:
+        return 0.
+    points = cv2.goodFeaturesToTrack(previous, 200, .01, 8)
+    if points is None:
+        return 0.
+    tracked, status, _ = cv2.calcOpticalFlowPyrLK(previous, current, points, None)
+    if tracked is None or status.sum() < 8:
+        return 0.
+    valid = status.ravel().astype(bool)
+    return float(np.median(np.linalg.norm(tracked[valid] - points[valid], axis=2)))
+
+
+def next_step(step, displacement, base):
+    return max(1, round(np.clip(step * np.clip(12 / max(displacement, 1), .5, 2), max(1, base / 4), base * 4)))
+
+
+def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress, telemetry=None):
     started = time.monotonic()
     info = metadata(path)
-    step = max(1, round(config.interval * info.fps))
-    indices = range(0, min(info.frame_count, step * config.max_frames), step)
+    from drone3d_studio.services.telemetry import at_time, distance
+    if config.gps_spacing_m > 0 and not telemetry:
+        raise ValueError("GPS keyframe spacing is enabled but telemetry is missing. Import a synchronized CSV or set spacing to zero.")
+    step = base_step = max(1, round(config.interval * info.fps))
     run = uuid4().hex[:12]
     cap = cv2.VideoCapture(str(path))
-    records, last_accepted = [], None
+    records, last_accepted, previous = [], None, None
+    accepted_gps = []
+    index = 0
     try:
-        for number, index in enumerate(indices):
+        while index < info.frame_count and len(records) < config.max_frames:
             if cancel.is_set():
                 raise Cancelled("Analysis cancelled. Previously completed analysis is retained.")
             cap.set(cv2.CAP_PROP_POS_FRAMES, index)
@@ -74,12 +102,28 @@ def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress):
             if not ok:
                 raise ValueError(f"Decoding failed at frame {index}; try converting the video to H.264.")
             blur, sig = blur_score(frame), signature(frame)
+            features, clipped = quality(frame)
+            gray = cv2.resize(gray_frame(frame), (640, 360))
+            displacement = motion(previous, gray)
+            previous = gray
+            fix = at_time(telemetry, index / info.fps + config.telemetry_offset_s, config.telemetry_max_gap_s)
             reason = "Blurry" if blur < config.blur_threshold else ""
+            if not reason and clipped > config.max_clipped_fraction:
+                reason = "Exposure clipping"
+            if not reason and features < config.min_features:
+                reason = "Too few visual features"
             if not reason and last_accepted is not None and duplicate_score(sig, last_accepted) < config.duplicate_threshold:
                 reason = "Near duplicate"
+            if not reason and config.gps_spacing_m > 0:
+                if fix is None:
+                    reason = "Missing synchronized GPS"
+                elif accepted_gps and min(distance(fix, other) for other in accepted_gps) < config.gps_spacing_m:
+                    reason = "GPS spacing too small"
             accepted = not reason
             if accepted:
                 last_accepted = sig
+                if fix:
+                    accepted_gps.append(fix)
             category = "accepted" if accepted else "rejected"
             target = root / "frames" / category / run / f"frame_{index:08d}.jpg"
             # Keep full accepted frames for photogrammetry; rejected frames are previews only.
@@ -88,11 +132,17 @@ def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress):
             thumbnail = root / "thumbnails" / run / target.name
             write_image(thumbnail, thumb)
             records.append(Frame(index=index, time=index / info.fps, path=reference(root, target),
-                                 thumbnail=reference(root, thumbnail), blur=blur, accepted=accepted, reason=reason))
-            progress(round((number + 1) / len(indices) * 100), f"Sampled {number + 1}/{len(indices)} · {category} · sharpness {blur:.1f}")
+                                 thumbnail=reference(root, thumbnail), blur=blur, accepted=accepted, reason=reason, features=features, clipped_fraction=clipped,
+                                 quality_score=100 * (.4 * min(1, blur / max(3 * config.blur_threshold, 100)) + .3 * min(1, features / 500) + .3 * (1 - clipped)), motion_px=displacement, gps=fix))
+            percent = max((index + 1) / info.frame_count, len(records) / config.max_frames)
+            progress(min(99, round(percent * 100)), f"Sampled {len(records)} · {category} · sharpness {blur:.1f} · features {features} · clipped {clipped:.1%}")
+            if config.sampling_mode == "Adaptive" and len(records) > 1:
+                step = next_step(step, displacement, base_step)
+            index += step
         elapsed = time.monotonic() - started
         import json
         atomic_write(root / "frames" / f"analysis-{run}.json", json.dumps({"seconds": elapsed, "frames": [r.model_dump() for r in records]}, indent=2))
+        progress(100, f"Analysis complete: {len(records)} candidates, {sum(r.accepted for r in records)} keyframes")
         return records, elapsed
     finally:
         cap.release()

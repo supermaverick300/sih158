@@ -1,12 +1,14 @@
 # Drone 3D Studio
 
-A locally runnable Windows desktop MVP for turning drone video into inspected frames and reconstructed 3D scenes. Built with Python, PySide6, OpenCV, NumPy, Pydantic and Trimesh. No accounts, cloud services or API keys. Sparse reconstruction runs on CPU; dense surface reconstruction requires a CUDA GPU.
+A locally runnable Windows desktop MVP for turning drone video into inspected frames and reconstructed 3D scenes. Built with Python, PySide6, OpenCV, NumPy, Pydantic and Trimesh. No accounts, cloud services or API keys. Sparse reconstruction and optional AI depth fusion run on CPU; COLMAP dense stereo requires a CUDA GPU.
+
+**New: [seven-stage setup and download guide](docs/PIPELINE_SETUP.md)** — adaptive sampling, frame quality, GPS keyframes, COLMAP SfM, local Depth Anything V2, verified ENU alignment and colored depth fusion. Includes exact settings, telemetry CSV requirements, actual validation results and limitations of the user's stock clip.
 
 ## Demo versus real reconstruction
 
 **Demo mode creates procedural geometry. It does not recover the scene in your footage.** Import a video, run real frame analysis, then generate a clearly labelled drone, box and sphere to try editing, saving and reopening a scene.
 
-**The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo, depth fusion and Poisson meshing. A simplified, colored inspection surface opens in the viewer; full-resolution `mesh.ply` and dense `fused.ply` remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. COLMAP is installed separately. Texture atlases and metric/geographic calibration remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.
+**The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **COLMAP stereo** and **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo, depth fusion and Poisson meshing. A simplified, colored inspection surface opens in the viewer; full-resolution `mesh.ply` and dense `fused.ply` remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. Alternatively, **Depth Anything V2** generates calibrated, multi-view-filtered colored point clouds. Optional GPS alignment requires synchronized flight telemetry. Texture atlases remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.
 
 ## Windows installation
 
@@ -64,7 +66,7 @@ To test with real drone footage, supply your own local video through the file pi
 - Persistent sidebar: Projects, Dashboard, Video, Models, Scene, JSON Data and Settings.
 - Dark/light theme, validated settings, recent projects and debounced autosave with manual save.
 - Versioned JSON, atomic replacement, previous-valid-file backup and recovery prompt.
-- Streamed frame sampling, variance-of-Laplacian sharpness and grayscale thumbnail similarity. Duplicate scores are mean absolute pixel differences from the last accepted frame; smaller means more similar.
+- Adaptive optical-flow sampling, variance-of-Laplacian sharpness, ORB feature counts, exposure clipping, quality scores and grayscale thumbnail similarity. Optional GPS spacing filters keyframes; fixed sampling remains available. Duplicate scores are mean absolute pixel differences from the last accepted frame; smaller means more similar.
 - Full-resolution accepted JPEGs, bounded 240-pixel previews, rejected previews, frame records and per-run analysis report with elapsed time.
 - Model import, rename, visibility, removal, vertex/face counts, procedural demo models and per-object transforms.
 - Qt software 3D viewer with shaded triangles, point clouds, selection, grid, RGB axes, orbit/pan/zoom and named views.
@@ -89,7 +91,7 @@ python scripts\reconstruct_video.py "D:\path\flight.mp4" output\MyFlight --colma
 
 The destination must be a new directory. Add `--sparse` for CPU-only output. Open the resulting `project.drone3d.json` in the app. Ctrl+C requests cancellation; logs and status are saved even on failure.
 
-Capture slow movement, stable exposure, sharp images and high overlap. Include viewpoint variation around the subject. A single forward pass, featureless water, moving vegetation or motion blur can prevent registration. Sparse results have arbitrary units and are not survey measurements.
+Capture slow movement, stable exposure, sharp images and high overlap. Include viewpoint variation around the subject. A single forward pass, featureless water, moving vegetation or motion blur can prevent registration or reliable depth calibration. Results have arbitrary units unless GPS alignment succeeds; alignment alone does not establish survey accuracy.
 
 ## Persistence and portable projects
 
@@ -130,22 +132,32 @@ drone-3d-studio/
 │   ├── services/
 │   │   ├── video.py            # Metadata, streamed sampling, quality checks
 │   │   ├── meshes.py           # Model loading and procedural geometry
+│   │   ├── telemetry.py        # GPS CSV validation and interpolation
 │   │   └── samples.py          # Portable sample project factory
-│   ├── reconstruction/colmap.py # Real sparse/dense backend and process service
+│   ├── reconstruction/
+│   │   ├── colmap.py           # Real sparse/dense backend, run reports
+│   │   ├── geometry.py         # COLMAP cameras, poses and points
+│   │   ├── alignment.py        # Verified GPS-to-ENU alignment
+│   │   └── ai_depth.py         # Local inference, calibration and fusion
 │   ├── viewer/canvas.py        # CPU Qt 3D projection, drawing and picking
 │   └── workers/jobs.py         # Cancellable QThread jobs
 ├── tests/
 │   ├── conftest.py
 │   ├── test_storage.py
 │   ├── test_services.py
+│   ├── test_pipeline.py
 │   └── test_gui.py
 ├── config/sample-settings.json
 ├── data/samples/Harbor-Demo/    # Sample JSON and small generated PLYs
 ├── docs/
 │   ├── screenshots/            # Actual offscreen app captures
+│   ├── PIPELINE_SETUP.md        # Seven-stage settings/downloads/telemetry
 │   └── VALIDATION.md           # Commands and observed results
 ├── scripts/
 │   ├── setup_windows.cmd
+│   ├── setup_ai_windows.cmd
+│   ├── download_depth_model.py
+│   ├── refine_with_ai.py
 │   ├── build_windows.cmd
 │   ├── make_sample.py
 │   ├── make_test_video.py
@@ -153,6 +165,7 @@ drone-3d-studio/
 │   └── capture_screenshots.py
 ├── requirements.txt
 ├── requirements-dev.txt
+├── requirements-ai.txt
 ├── pyproject.toml
 ├── .gitignore
 ├── AGENTS.md
@@ -223,4 +236,4 @@ Exact runtime pins were chosen after checking the official [Qt for Python instal
 
 ## Roadmap
 
-Future work: a GPU-accelerated optional viewport, texture atlases, additional reconstruction backends, overlap estimation, undo/redo, transformed model export, portable project bundles and metric/geographic alignment.
+Future work: a GPU-accelerated optional viewport, texture atlases, additional reconstruction backends, overlap estimation, undo/redo, transformed model export, portable project bundles and more telemetry formats.

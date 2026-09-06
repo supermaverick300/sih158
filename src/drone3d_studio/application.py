@@ -19,10 +19,10 @@ from PySide6.QtWidgets import (
     QGroupBox, QScrollArea,
 )
 
-from drone3d_studio.domain.models import Project, Settings, AnalysisConfig, Transform, now
+from drone3d_studio.domain.models import Project, Settings, AnalysisConfig, PipelineConfig, Transform, now
 from drone3d_studio.persistence import store
 from drone3d_studio.persistence.autosave import Autosave
-from drone3d_studio.services import video, meshes
+from drone3d_studio.services import video, meshes, telemetry
 from drone3d_studio.reconstruction.colmap import ColmapBackend, detect, probe
 from drone3d_studio.viewer.canvas import SceneCanvas
 from drone3d_studio.workers.jobs import Job
@@ -140,6 +140,9 @@ class Studio(QMainWindow):
         self.build_settings()
         for control in (self.interval, self.blur, self.duplicate_threshold, self.maximum):
             control.valueChanged.connect(self.analysis_settings_changed)
+        for control in self.analysis_widgets.values():
+            signal = control.currentTextChanged if isinstance(control, QComboBox) else control.valueChanged
+            signal.connect(self.analysis_settings_changed)
         self.nav.currentRowChanged.connect(self.navigate)
         self.nav.setCurrentRow(0)
         self.apply_theme(self.defaults.theme)
@@ -305,6 +308,12 @@ class Studio(QMainWindow):
 
     def build_settings(self):
         layout = self.page("Settings", "Settings are saved with the project and used as defaults for new projects.")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        panel = QWidget()
+        scroll.setWidget(panel)
+        layout.addWidget(scroll)
+        layout = QVBoxLayout(panel)
         form = QFormLayout()
         self.setting_widgets = {}
         options = {"theme": ["Dark", "Light"], "reconstruction_mode": ["COLMAP"], "reconstruction_output": ["Dense mesh (CUDA)", "Sparse cloud (CPU)"], "logging_level": ["DEBUG", "INFO", "WARNING", "ERROR"]}
@@ -331,6 +340,55 @@ class Studio(QMainWindow):
         info.setWordWrap(True)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(info)
+        group = QGroupBox("1–3 · Adaptive sampling, quality and GPS keyframes")
+        form = QFormLayout(group)
+        self.analysis_widgets = {}
+        defaults = Project(name="Defaults").analysis
+        for key, label, minimum, maximum, decimals in (
+            ("sampling_mode", "Sampling method", 0, 0, 0),
+            ("min_features", "Minimum ORB features", 0, 2000, 0),
+            ("max_clipped_fraction", "Maximum clipped pixel fraction", 0, 1, 2),
+            ("gps_spacing_m", "Minimum GPS spacing (m; 0 disables)", 0, 1000, 2),
+            ("telemetry_offset_s", "Telemetry time = video time + offset (s)", -86400, 86400, 2),
+            ("telemetry_max_gap_s", "Maximum telemetry interpolation gap (s)", .01, 60, 2),
+        ):
+            if key == "sampling_mode":
+                widget = QComboBox()
+                widget.addItems(["Adaptive", "Fixed"])
+                widget.setCurrentText(defaults.sampling_mode)
+            else:
+                widget = spin(getattr(defaults, key), minimum, maximum, decimals)
+            self.analysis_widgets[key] = widget
+            form.addRow(label, widget)
+        self.telemetry_info = QLabel("No telemetry loaded. GPS stages require synchronized flight positions.")
+        self.telemetry_info.setWordWrap(True)
+        form.addRow(self.telemetry_info)
+        form.addRow(button("Import telemetry CSV…", self.import_telemetry))
+        form.addRow(button("Clear telemetry", self.clear_telemetry))
+        layout.addWidget(group)
+        group = QGroupBox("4–7 · Reconstruction pipeline (current project)")
+        form = QFormLayout(group)
+        self.pipeline_widgets = {}
+        config = PipelineConfig()
+        for key, label in (("depth_method", "Depth method"), ("weights_path", "Local AI weights folder"), ("device", "AI inference device"), ("align_gps", "Align SfM to GPS before depth fusion"), ("alignment_max_error_m", "GPS inlier threshold (m)"), ("fusion_voxel_size", "AI fusion voxel size (scene units)"), ("depth_stride", "AI depth pixel stride")):
+            value = getattr(config, key)
+            if key in ("depth_method", "device"):
+                widget = QComboBox()
+                widget.addItems(["COLMAP stereo", "Depth Anything V2"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
+            elif key == "align_gps":
+                widget = QCheckBox()
+            elif key == "weights_path":
+                widget = QLineEdit(value)
+            else:
+                widget = spin(value, 2 if key == "depth_stride" else .001, 32 if key == "depth_stride" else 100, 0 if key == "depth_stride" else 3)
+            self.pipeline_widgets[key] = widget
+            form.addRow(label, widget)
+        form.addRow(button("Choose AI weights folder…", self.choose_weights))
+        form.addRow(button("Check AI installation", self.check_ai))
+        help_text = QLabel("Depth Anything V2 produces a colored point cloud and overrides the COLMAP output choice above. Its relative depth is calibrated using triangulated SfM points. Units become meters only after successful GPS alignment. Without telemetry, leave GPS spacing at 0 and alignment unchecked. Run scripts\\setup_ai_windows.cmd once to install AI dependencies and weights.")
+        help_text.setWordWrap(True)
+        form.addRow(help_text)
+        layout.addWidget(group)
         layout.addWidget(button("Save settings", self.save_settings, True))
         layout.addStretch()
 
@@ -381,7 +439,7 @@ class Studio(QMainWindow):
             project = store.create(root, name, description)
             project.settings = self.defaults.model_copy(deep=True)
             try:
-                project.analysis = AnalysisConfig.model_validate_json(self.prefs.value("analysis_defaults", "{}"))
+                project.analysis = AnalysisConfig.model_validate_json(self.prefs.value("analysis_defaults", project.analysis.model_dump_json()))
             except ValueError:
                 pass
             self.activate(root, project)
@@ -425,6 +483,22 @@ class Studio(QMainWindow):
             control.setValue(value)
             control.blockSignals(False)
         self.load_settings_widgets(project.settings)
+        for key, widget in self.analysis_widgets.items():
+            widget.blockSignals(True)
+            value = getattr(project.analysis, key)
+            widget.setCurrentText(value) if isinstance(widget, QComboBox) else widget.setValue(value)
+            widget.blockSignals(False)
+        for key, widget in self.pipeline_widgets.items():
+            value = getattr(project.pipeline, key)
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(value)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(value)
+            elif isinstance(widget, QDoubleSpinBox):
+                widget.setValue(value)
+            else:
+                widget.setText(value)
+        self.refresh_telemetry()
         self.apply_theme(project.settings.theme)
         self.canvas.background = project.settings.background
         logging.getLogger().setLevel(project.settings.logging_level)
@@ -639,6 +713,9 @@ class Studio(QMainWindow):
         self.stop_video()
         self.project.video = info
         self.project.frames = []
+        self.project.telemetry = []
+        self.project.telemetry_source = ""
+        self.refresh_telemetry()
         self.project.analysis_seconds = 0
         self.project.reconstruction_status = "Not started for current video"
         self.project.status = "Ready for analysis"
@@ -720,17 +797,23 @@ class Studio(QMainWindow):
         if not self.project.video:
             self.error("Import a video before analyzing frames.")
             return
-        config = AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value())
+        config = self.analysis_config()
         self.project.analysis = config
         self.project.status = "Analysis running"
         path = store.resolve(self.root, self.project.video.path)
-        self.run_job(lambda cancel, progress: video.analyze(path, self.root, config, cancel, progress), self.analysis_done)
+        fixes = list(self.project.telemetry)
+        self.run_job(lambda cancel, progress: video.analyze(path, self.root, config, cancel, progress, fixes), self.analysis_done)
         self.changed()
 
     def analysis_settings_changed(self):
         if self.project:
-            self.project.analysis = AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value())
+            self.project.analysis = self.analysis_config()
+            self.retag_frames()
             self.autosave.trigger(self.project.settings.autosave_ms)
+
+    def analysis_config(self):
+        values = {key: widget.currentText() if isinstance(widget, QComboBox) else widget.value() for key, widget in self.analysis_widgets.items()}
+        return AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value(), **values)
 
     def analysis_done(self, result):
         self.project.frames, self.project.analysis_seconds = result
@@ -749,7 +832,7 @@ class Studio(QMainWindow):
         for frame in self.project.frames:
             item = QListWidgetItem(f"{'Accepted' if frame.accepted else 'Rejected'} · {frame.time:.1f}s\nSharpness {frame.blur:.1f}\n{frame.reason}")
             item.setIcon(QIcon(str(store.resolve(self.root, frame.thumbnail))))
-            item.setToolTip(f"{frame.path}\n{frame.reason or 'Passed quality checks'}")
+            item.setToolTip(f"{frame.path}\n{frame.reason or 'Passed quality checks'}\nQuality: {frame.quality_score:.0f}/100 · Features: {frame.features}\nClipped pixels: {frame.clipped_fraction:.1%} · Motion: {frame.motion_px:.1f}px\nGPS: {frame.gps.model_dump() if frame.gps else 'Unavailable'}")
             self.frames.addItem(item)
         accepted = sum(f.accepted for f in self.project.frames)
         self.frame_summary.setText(f"{len(self.project.frames)} sampled · {accepted} accepted · {len(self.project.frames) - accepted} rejected · {self.project.analysis_seconds:.2f}s")
@@ -767,8 +850,9 @@ class Studio(QMainWindow):
         if mode == "Demo":
             function = lambda cancel, progress: meshes.demo_scene(self.root, cancel, progress)
         else:
-            backend = ColmapBackend(self.project.settings.executable, self.project.settings.reconstruction_output)
-            function = lambda cancel, progress: backend.run(self.root, self.project.frames, cancel, progress)
+            backend = ColmapBackend(self.project.settings.executable, self.project.settings.reconstruction_output, self.project.pipeline.model_copy(deep=True))
+            frames = [frame.model_copy(deep=True) for frame in self.project.frames]
+            function = lambda cancel, progress: backend.run(self.root, frames, cancel, progress)
         self.run_job(function, self.scene_done)
         self.changed()
 
@@ -778,6 +862,10 @@ class Studio(QMainWindow):
             self.meshes[model.id] = mesh
         self.project.status = "Scene ready"
         self.project.reconstruction_status = "Demo scene — procedural geometry, NOT photogrammetry" if result and result[0][0].origin == "Demo" else "Succeeded — real COLMAP surface mesh" if any(m.faces for m, mesh in result) else "Succeeded — real COLMAP sparse point cloud"
+        if any(m.origin == "Depth Anything V2" for m, mesh in result):
+            self.project.reconstruction_status = "Succeeded — SfM-calibrated Depth Anything V2 colored cloud"
+        if result and result[0][0].origin != "Demo":
+            self.project.reconstruction_status += " · GPS-aligned ENU meters" if self.project.pipeline.align_gps else " · arbitrary SfM units (no GPS)"
         self.log(self.project.reconstruction_status)
         self.changed()
         self.canvas.frame_all()
@@ -935,6 +1023,8 @@ class Studio(QMainWindow):
                 widget.setText(value)
 
     def save_settings(self):
+        if not self.idle():
+            return
         values = {}
         for key, widget in self.setting_widgets.items():
             values[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.value() if isinstance(widget, QSpinBox) else widget.text()
@@ -945,7 +1035,7 @@ class Studio(QMainWindow):
             return
         self.defaults = settings
         self.prefs.setValue("settings", settings.model_dump_json())
-        analysis_defaults = AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value())
+        analysis_defaults = self.analysis_config()
         self.prefs.setValue("analysis_defaults", analysis_defaults.model_dump_json())
         self.apply_theme(settings.theme)
         self.canvas.background = settings.background
@@ -953,6 +1043,10 @@ class Studio(QMainWindow):
         logging.getLogger().setLevel(settings.logging_level)
         if self.project:
             self.project.settings = settings.model_copy(deep=True)
+            values = {}
+            for key, widget in self.pipeline_widgets.items():
+                values[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.isChecked() if isinstance(widget, QCheckBox) else widget.value() if isinstance(widget, QDoubleSpinBox) else widget.text()
+            self.project.pipeline = PipelineConfig.model_validate(values)
             self.changed()
         self.statusBar().showMessage("Settings saved")
 
@@ -963,6 +1057,64 @@ class Studio(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Choose COLMAP executable", "", "Executable (*.exe)")
         if path:
             self.setting_widgets["executable"].setText(path)
+
+    def choose_weights(self):
+        path = QFileDialog.getExistingDirectory(self, "Choose Depth Anything V2 Small weights folder")
+        if path:
+            self.pipeline_widgets["weights_path"].setText(path)
+
+    def check_ai(self):
+        if not self.idle():
+            return
+        from drone3d_studio.reconstruction.ai_depth import check_installation
+        weights = Path(self.pipeline_widgets["weights_path"].text())
+        if not weights.is_absolute():
+            weights = Path(__file__).resolve().parents[2] / weights
+        def checking(cancel, progress):
+            check_installation(weights)
+            import torch
+            return f"Local weights found: {weights}\nPyTorch {torch.__version__}\nCUDA available: {torch.cuda.is_available()}\nCPU inference works with the optional AI setup."
+        self.run_job(checking, lambda message: QMessageBox.information(self, "AI installation", message))
+
+    def refresh_telemetry(self):
+        fixes = self.project.telemetry if self.project else []
+        self.telemetry_info.setText(f"{len(fixes)} GPS fixes · {fixes[0].time:.2f}–{fixes[-1].time:.2f}s\n{self.project.telemetry_source}" if fixes else "No telemetry loaded. GPS stages require synchronized flight positions.")
+
+    def import_telemetry(self):
+        if not self.require_project() or not self.idle():
+            return
+        if not self.project.video:
+            self.error("Import the matching video before its telemetry.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Telemetry: time_s, latitude, longitude, altitude_m", "", "Flight telemetry (*.csv)")
+        if not path:
+            return
+        try:
+            from uuid import uuid4
+            fixes = telemetry.load_csv(Path(path))
+            target = self.root / "source" / f"telemetry-{uuid4().hex[:8]}.csv"
+            shutil.copy2(path, target)
+            self.project.telemetry = fixes
+            self.project.telemetry_source = store.reference(self.root, target)
+            self.retag_frames()
+            self.refresh_telemetry()
+            self.log("Telemetry imported. Re-analyze frames to apply GPS spacing; existing frames have updated GPS timestamps.")
+            self.changed()
+        except Exception as exc:
+            self.error(str(exc))
+
+    def retag_frames(self):
+        for frame in self.project.frames:
+            frame.gps = telemetry.at_time(self.project.telemetry, frame.time + self.project.analysis.telemetry_offset_s, self.project.analysis.telemetry_max_gap_s)
+        self.refresh_frames()
+
+    def clear_telemetry(self):
+        if self.require_project() and self.idle():
+            self.project.telemetry = []
+            self.project.telemetry_source = ""
+            self.retag_frames()
+            self.refresh_telemetry()
+            self.changed()
 
     def check_colmap(self):
         if self.idle():

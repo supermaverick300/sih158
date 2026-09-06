@@ -33,6 +33,7 @@ def test_complete_gui_workflow(qtbot, tmp_path):
     qtbot.waitUntil(lambda: window.job is None, timeout=15000)
     assert window.project.video.frame_count == 48
     window.blur.setValue(0)
+    window.analysis_widgets["sampling_mode"].setCurrentText("Fixed")
     window.start_analysis()
     qtbot.waitUntil(lambda: window.job is None, timeout=15000)
     assert window.project.status == "Ready for reconstruction"
@@ -145,4 +146,39 @@ def test_primary_reconstruction_never_falls_back_to_demo(qtbot, tmp_path, monkey
     assert project.status == "Failed"
     assert project.models == []
     assert errors == ["Real reconstruction failed"]
+    window.close()
+
+
+def test_pipeline_controls_persist_and_reach_backend(qtbot, tmp_path, monkeypatch):
+    from drone3d_studio import application
+    from drone3d_studio.domain.models import Frame
+    window = Studio()
+    qtbot.addWidget(window)
+    root = tmp_path / "pipeline"
+    project = store.create(root, "Pipeline")
+    window.activate(root, project)
+    window.pipeline_widgets["depth_method"].setCurrentText("Depth Anything V2")
+    window.pipeline_widgets["device"].setCurrentText("CPU")
+    window.pipeline_widgets["align_gps"].setChecked(True)
+    window.analysis_widgets["gps_spacing_m"].setValue(2)
+    window.save_settings()
+    window.manual_save()
+    saved = store.load(root)
+    assert saved.pipeline.depth_method == "Depth Anything V2"
+    assert saved.pipeline.align_gps and saved.pipeline.device == "CPU"
+    assert saved.analysis.gps_spacing_m == 2 and saved.analysis.sampling_mode == "Adaptive"
+    project.frames = [Frame(index=0, time=0, path="", thumbnail="", blur=1, accepted=True)]
+    seen = []
+    class Backend:
+        def __init__(self, executable, output, pipeline):
+            seen.append(pipeline)
+        def run(self, *args):
+            raise ValueError("Missing telemetry")
+    monkeypatch.setattr(application, "ColmapBackend", Backend)
+    errors = []
+    window.error = errors.append
+    window.reconstruct()
+    qtbot.waitUntil(lambda: window.job is None)
+    assert seen[0] == saved.pipeline and seen[0] is not project.pipeline
+    assert errors == ["Missing telemetry"]
     window.close()

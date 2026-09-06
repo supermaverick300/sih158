@@ -1,5 +1,36 @@
 # Development validation
 
+## Seven-stage integration — September 6, 2026
+
+Added adaptive sampling, feature/exposure scoring, timestamped GPS CSV import and spacing, local Depth Anything V2 Small inference, SfM inverse-depth calibration, verified GPS-to-ENU alignment and multi-view colored voxel fusion. The Settings UI persists these controls in project JSON; imported/exported telemetry references are rebased. Existing projects retain compatible defaults. Real reconstruction never falls back to demo geometry.
+
+AI setup was executed on Python 3.10.11: PyTorch **2.8.0+cpu**, Transformers **4.57.6**, Pillow **11.3.0**, safetensors **0.7.0**. The official Small model downloaded successfully at revision `5426e4f0f36572d16453bbda7a8389317b1bef99`; its local download manifest records the SHA-256. `pip check` reported no broken requirements.
+
+- **Automated suite:** 41 passed in 14.31 seconds. Covers motion-adaptive intervals, quality rejection, telemetry gaps/dateline/spacing, ENU axes, robust calibration with outliers, camera poses, multi-view rejection and colored fusion, JSON round trips, GUI-to-backend configuration, AI orchestration and persisted failure reports. The broader pre-existing tests also pass.
+- **Startup:** `venv\Scripts\python main.py --smoke-test` exited 0 after permission to write the normal application log. An initial sandboxed attempt failed at that log file; it was not an application startup defect.
+- **User stock footage:** reused its existing COLMAP undistorted workspace, avoiding repeat SfM. All **30** actual neural depth maps were generated. All failed the positive inverse-depth slope check against the existing SfM geometry. No AI cloud was accepted and the existing project/mesh was preserved. This is a demonstrated limitation of this input/reconstruction pairing, not a successful AI reconstruction claim.
+- **Real reference photographs:** undistorted the official COLMAP South Building model at a maximum 1000 pixels and selected the first 12 images by filename. All **12** neural depth maps passed calibration. Multi-view fusion produced **131,926** colored points. Source: the previously downloaded official South Building archive. The app loaded the resulting PLY and rendered it successfully. This is a partial reference-scene cloud, not the user's drone video, a complete building, or a metric survey.
+- **Real GPS-aligner executable:** ran COLMAP `model_aligner` against a clearly synthetic fixture with five known WGS84 camera locations and a known 3× similarity transform. All five residuals passed, RMSE approximately **2.5e-10 m**. This measures numerical recovery of a constructed fixture; no real flight telemetry or geographic accuracy was validated.
+- **UI:** rendered and visually inspected the scrollable pipeline Settings page and actual AI reference cloud. Saved screenshots and test assets remain in ignored `output/`.
+
+Local artifacts: `output/real-drone/reconstruction/ai-refine-8ab29a72ec85/` contains the rejected user-video depth maps and calibration report; `output/ai-reference/dense/ai-fused.ply` is the successful reference cloud; `output/AI-Reference-Validation/project.drone3d.json` opens it in the app; `output/gps-validation/alignment/georeference.json` is the synthetic GPS validation report.
+
+CPU AI inference was validated; CUDA PyTorch inference, direct DJI SRT parsing, real GPS accuracy and packaging AI into the optional executable were not validated or implemented. See [setup and limitations](PIPELINE_SETUP.md).
+
+Commands actually executed for this integration (in addition to the ignored reference/GPS/UI validation scripts described above):
+
+```powershell
+venv\Scripts\python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+venv\Scripts\python -m pip install -r requirements-ai.txt
+venv\Scripts\python scripts\download_depth_model.py
+venv\Scripts\python scripts\refine_with_ai.py output\real-drone output\real-drone\reconstruction\fbb5ea4885f0\dense-0 --colmap D:\DOWNLOADS\colmap-x64-windows-cuda\bin\colmap.exe
+venv\Scripts\python -m pip check
+venv\Scripts\python -m pytest
+venv\Scripts\python main.py --smoke-test
+```
+
+The refine command exited 1 for the documented calibration disagreement; dependency installation, download, dependency check, final tests and final startup exited 0.
+
 ## Real-reconstruction upgrade
 
 The main reconstruction action now always calls COLMAP, including when opening older projects that saved Demo as their mode. Demo generation is an explicit separate Models action. Added actual dense stages (undistortion, CUDA stereo, fusion, Poisson surface generation and inspection simplification), child-only Windows plugin paths, bounded processing settings, executable/version probing, colored geometry display and a diagnostic video runner.

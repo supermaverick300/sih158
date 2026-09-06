@@ -86,6 +86,8 @@ def duplicate(root: Path, destination: Path, project: Project) -> Project:
 def import_json(path: Path, root: Path) -> Project:
     project = Project.model_validate_json(path.read_text(encoding="utf-8"))
     # Rebase references to the JSON's directory before saving in a new location.
+    if project.telemetry_source:
+        project.telemetry_source = reference(root, resolve(path.parent, project.telemetry_source))
     if project.video:
         project.video.path = reference(root, resolve(path.parent, project.video.path))
     for model in project.models:
@@ -98,6 +100,8 @@ def import_json(path: Path, root: Path) -> Project:
 
 def export_json(path: Path, root: Path, project: Project):
     copy = project.model_copy(deep=True)
+    if copy.telemetry_source:
+        copy.telemetry_source = reference(path.parent, resolve(root, copy.telemetry_source))
     if copy.video:
         copy.video.path = reference(path.parent, resolve(root, copy.video.path))
     for model in copy.models:

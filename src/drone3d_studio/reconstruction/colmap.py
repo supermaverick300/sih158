@@ -1,5 +1,6 @@
 """Real sparse and CUDA dense COLMAP reconstruction. No fabricated output."""
 import os
+import json
 from pathlib import Path
 import queue
 import shutil
@@ -10,7 +11,7 @@ from uuid import uuid4
 
 from drone3d_studio.services.video import Cancelled
 from drone3d_studio.services.meshes import model_record, transfer_vertex_colors
-from drone3d_studio.persistence.store import resolve
+from drone3d_studio.persistence.store import resolve, atomic_write
 
 
 class Backend(Protocol):
@@ -92,19 +93,52 @@ def run_command(args, cancel, log, cwd):
 
 
 class ColmapBackend:
-    def __init__(self, executable="", output="Sparse cloud (CPU)"):
+    def __init__(self, executable="", output="Sparse cloud (CPU)", pipeline=None):
+        from drone3d_studio.domain.models import PipelineConfig
         self.executable = executable
         self.output = output
+        self.pipeline = pipeline or PipelineConfig()
 
     def run(self, root, frames, cancel, progress):
+        self.work = None
+        report = {"status": "Running", "configuration": self.pipeline.model_dump(), "accepted_frames": sum(f.accepted for f in frames), "gps_alignment": "Requested" if self.pipeline.align_gps else "Skipped: no metric/geographic claim", "last_event": "Preflight"}
+        def tracking(value, message):
+            report["last_event"] = message
+            progress(value, message)
+        try:
+            result = self._run(root, frames, cancel, tracking)
+            report["status"] = "Succeeded"
+            report["units"] = "Local ENU metres" if self.pipeline.align_gps else "Arbitrary SfM units"
+            report["gps_alignment"] = "Succeeded" if self.pipeline.align_gps else "Skipped"
+            report["outputs"] = [{"path": model.path, "origin": model.origin, "vertices": model.vertices, "faces": model.faces} for model, mesh in result]
+            return result
+        except Exception as exc:
+            report["status"] = "Cancelled" if isinstance(exc, Cancelled) else "Failed"
+            report["error"] = str(exc)
+            raise
+        finally:
+            if self.work:
+                atomic_write(self.work / "pipeline-report.json", json.dumps(report, indent=2))
+
+    def _run(self, root, frames, cancel, progress):
         executable = detect(self.executable)
+        ai = self.pipeline.depth_method == "Depth Anything V2"
+        weights = Path(self.pipeline.weights_path)
+        if not weights.is_absolute():
+            weights = Path(__file__).resolve().parents[3] / weights
+        if ai:
+            from drone3d_studio.reconstruction.ai_depth import check_installation
+            check_installation(weights)
         accepted = [f for f in frames if f.accepted]
         if len(accepted) < 3:
             raise ValueError("COLMAP requires at least three accepted overlapping frames; usually many more.")
         work = root / "reconstruction" / uuid4().hex[:12]
+        self.work = work
         images, sparse = work / "images", work / "sparse"
         images.mkdir(parents=True)
         sparse.mkdir()
+        if self.pipeline.align_gps and sum(f.gps is not None for f in accepted) < 3:
+            raise ValueError("GPS alignment enabled but fewer than three keyframes have GPS. Import synchronized telemetry and re-analyze; disabling alignment keeps arbitrary SfM coordinates.")
         for i, frame in enumerate(accepted):
             if cancel.is_set():
                 raise Cancelled("COLMAP cancelled while staging frames")
@@ -139,11 +173,32 @@ class ColmapBackend:
                 raise RuntimeError("COLMAP could not register a scene. Try sharper footage with more overlap and viewpoint variation.")
             result = []
             for index, output in enumerate(outputs):
+                component = work / f"component-{index}"
+                component.mkdir()
+                if self.pipeline.align_gps:
+                    from drone3d_studio.reconstruction.alignment import align
+                    output = align(output, component, accepted, executable, self.pipeline, cancel, log, run_command)
+                else:
+                    log("GPS alignment skipped: output coordinates have arbitrary SfM scale.")
                 ply = work / f"sparse-{index}.ply"
                 run_command([executable, "model_converter", "--input_path", str(output), "--output_path", str(ply), "--output_type", "PLY"], cancel, log, work)
                 record, mesh = model_record(root, ply, "COLMAP")
                 record.name = f"COLMAP sparse cloud {index + 1}"
                 result.append((record, mesh))
+                if ai:
+                    from drone3d_studio.reconstruction.ai_depth import run_depth_pipeline
+                    dense = work / f"ai-dense-{index}"
+                    dense.mkdir()
+                    run_command([executable, "image_undistorter", "--image_path", str(images), "--input_path", str(output), "--output_path", str(dense), "--output_type", "COLMAP", "--max_image_size", "1000"], cancel, log, work)
+                    text_model = dense / "text-model"
+                    text_model.mkdir()
+                    run_command([executable, "model_converter", "--input_path", str(dense / "sparse"), "--output_path", str(text_model), "--output_type", "TXT"], cancel, log, work)
+                    cloud_path = run_depth_pipeline(dense, text_model, weights, self.pipeline, cancel, progress)
+                    ai_record, ai_cloud = model_record(root, cloud_path, "Depth Anything V2")
+                    ai_record.name = "Depth Anything V2 fused cloud" + (" · ENU metres" if self.pipeline.align_gps else " · SfM units")
+                    record.visible = False
+                    result.append((ai_record, ai_cloud))
+                    continue
                 if self.output == "Dense mesh (CUDA)":
                     dense = work / f"dense-{index}"
                     dense.mkdir()
