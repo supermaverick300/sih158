@@ -34,6 +34,27 @@ def model_record(root: Path, path: Path, origin="Imported"):
                  vertices=len(mesh.vertices), faces=len(getattr(mesh, "faces", [])), origin=origin), mesh
 
 
+def transfer_vertex_colors(source, target, cancel):
+    """Restore measured colors if an external simplifier drops PLY color fields.
+
+    Nearest sampled source vertex, in bounded chunks; never changes geometry.
+    """
+    if not getattr(source.visual, "defined", False):
+        return
+    from drone3d_studio.services.video import Cancelled
+    step = max(1, int(np.ceil(len(source.vertices) / 20000)))
+    vertices = np.asarray(source.vertices[::step], dtype=np.float32)
+    colors = source.visual.vertex_colors[::step]
+    result = []
+    for start in range(0, len(target.vertices), 64):
+        if cancel.is_set():
+            raise Cancelled("Cancelled while preparing inspection colors")
+        chunk = np.asarray(target.vertices[start:start + 64], dtype=np.float32)
+        distances = np.sum((chunk[:, None, :] - vertices[None, :, :]) ** 2, axis=2)
+        result.append(colors[np.argmin(distances, axis=1)])
+    target.visual.vertex_colors = np.concatenate(result)
+
+
 def matrix(transform: Transform):
     result = trimesh.transformations.euler_matrix(*np.radians(transform.rotation), axes="sxyz")
     result[:3, :3] = result[:3, :3] @ np.diag(transform.scale)

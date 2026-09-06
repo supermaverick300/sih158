@@ -2,7 +2,8 @@
   "theme": "Dark",
   "autosave_ms": 800,
   "default_project_directory": "",
-  "reconstruction_mode": "Demo",
+  "reconstruction_mode": "COLMAP",
+  "reconstruction_output": "Dense mesh (CUDA)",
   "executable": "",
   "background": "#101923",
   "logging_level": "INFO"

@@ -1,12 +1,12 @@
 # Drone 3D Studio
 
-A locally runnable Windows desktop MVP for turning drone video into inspected frames and editable 3D scenes. Built with Python, PySide6, OpenCV, NumPy, Pydantic and Trimesh. No accounts, cloud services, API keys or GPU required for the core workflow.
+A locally runnable Windows desktop MVP for turning drone video into inspected frames and reconstructed 3D scenes. Built with Python, PySide6, OpenCV, NumPy, Pydantic and Trimesh. No accounts, cloud services or API keys. Sparse reconstruction runs on CPU; dense surface reconstruction requires a CUDA GPU.
 
 ## Demo versus real reconstruction
 
 **Demo mode creates procedural geometry. It does not recover the scene in your footage.** Import a video, run real frame analysis, then generate a clearly labelled drone, box and sphere to try editing, saving and reopening a scene.
 
-**Real mode is an optional COLMAP integration.** It runs CPU feature extraction, sequential matching and sparse mapping in an external executable, then imports the resulting PLY point clouds. Reliable reconstruction depends on the footage. COLMAP is not installed with the Python requirements. Dense meshes, texture generation and metric/geographic calibration are outside this MVP. No successful real reconstruction is claimed by the included synthetic tests.
+**The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo, depth fusion and Poisson meshing. A simplified, colored inspection surface opens in the viewer; full-resolution `mesh.ply` and dense `fused.ply` remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. COLMAP is installed separately. Texture atlases and metric/geographic calibration remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.
 
 ## Windows installation
 
@@ -38,7 +38,7 @@ The primary launch command is **`python main.py`**. In PowerShell, activate with
 2. In **Video**, import an MP4, MOV or AVI. Choose **No** in the copy prompt to reference the original video; choose **Yes** to copy it into the project. Replacing a video requires confirmation and resets its analysis records while retaining existing scene objects.
 3. Play/pause or scrub the silent preview. Review resolution, frame rate, count, duration and file size.
 4. Set extraction interval, minimum sharpness, duplicate threshold and maximum samples. Click **Analyze**. The work runs in a cancellable background thread. Accepted/rejected previews show scores and reasons.
-5. Leave Settings → Reconstruction mode on **Demo**, then choose **Generate scene**. The procedural result is prominently labelled. **Models** can also import geometry or add primitives without a video.
+5. In Settings choose the extracted COLMAP `bin/colmap.exe`, choose **Dense mesh (CUDA)** or **Sparse cloud (CPU)**, and save settings. Then click **Generate scene**. Models can also import existing geometry. **Generate demo (test only)** is a separate action for procedural test content.
 6. In **Scene**, drag to orbit, right/middle-drag to pan, use the wheel to zoom, and click geometry or an object in the hierarchy to select it. Gold indicates selection. Use the named camera views or **Frame all**.
 7. Edit position, rotation (degrees) and positive scale in the property panel. Uniform scale sets all three axes to the edited value. Arrow keys move XY by 0.1 units, PageUp/PageDown move Z. Changes appear immediately and trigger autosave. Scroll the property panel on smaller screens.
 8. Press **Ctrl+S** or **Save now**. Check the bottom status bar for Saving, Saved or Save failed.
@@ -74,12 +74,20 @@ To test with real drone footage, supply your own local video through the file pi
 ## Optional COLMAP setup
 
 1. Download a Windows binary distribution from the [official COLMAP releases](https://github.com/colmap/colmap/releases). Extract the entire distribution, keeping its supporting DLLs beside the executable as required by that distribution.
-2. In **Settings**, choose the actual `colmap.exe` and save. Do not select a `.bat` or `.cmd` wrapper. Alternatively, place `colmap.exe` on PATH. **Check COLMAP installation** checks file presence; command compatibility is checked during the run.
-3. Set reconstruction mode to **COLMAP** and save settings. Analyze footage to produce at least three accepted frames; useful results usually require many more sharp, overlapping views.
+2. In **Settings**, choose the actual `colmap.exe` and save. Do not select a `.bat` or `.cmd` wrapper. Alternatively, place it on PATH or set `COLMAP_EXECUTABLE`. The app also checks common Downloads extraction folders. **Check COLMAP installation** executes its help command in a background worker and reports the version. The child process receives COLMAP's own DLL/plugin paths without changing global Windows environment variables.
+3. Choose **Dense mesh (CUDA)** for a surface, or **Sparse cloud (CPU)** for CPU-only processing, and save settings. Analyze footage to produce at least three accepted frames; useful results usually require many more sharp, overlapping views. Dense mesh and inspection simplification target COLMAP 4.2.0.
 4. Click **Generate scene**. Follow the live Dashboard log or `<project>/logs/colmap.log`. Progress is indeterminate during external commands because COLMAP does not provide a reliable total percentage.
-5. On success, sparse components become editable point-cloud objects. On failure, the UI records Failed and the detailed exit/log information. Cancellation terminates the active process and retains any previously completed scene.
+5. On success, reconstructed surfaces or sparse components become editable objects. Dense mode hides the sparse cloud when its surface is available. On failure, the UI records Failed and the detailed exit/log information. Completed intermediate files remain available through **Models → Reconstruction files**; a failed dense stage never claims a successful mesh. Cancellation terminates the active process and retains any previously completed scene.
 
-The backend checks installed help text to select old `SiftExtraction/SiftMatching` or newer `FeatureExtraction/FeatureMatching` GPU option names, and explicitly disables GPU extraction/matching. It uses `feature_extractor`, `sequential_matcher`, `mapper` and `model_converter`. Another backend can implement the protocol in `reconstruction/colmap.py` without adding subprocess code to the UI.
+The backend checks installed help text to select old `SiftExtraction/SiftMatching` or newer `FeatureExtraction/FeatureMatching` GPU option names. Feature extraction/matching use CPU; dense stereo uses CUDA. Extraction is capped at 1600 pixels/four threads; dense images at 1000 pixels, caches at 1 GB, fusion/meshing at four threads and Poisson depth at nine. The surface is simplified to about 1600 faces for the CPU viewer while retaining the original. Another backend can implement the protocol in `reconstruction/colmap.py` without adding subprocess code to the UI.
+
+For repeatable diagnostics without the GUI:
+
+```cmd
+python scripts\reconstruct_video.py "D:\path\flight.mp4" output\MyFlight --colmap "D:\path\COLMAP\bin\colmap.exe" --interval 0.5 --max-frames 30
+```
+
+The destination must be a new directory. Add `--sparse` for CPU-only output. Open the resulting `project.drone3d.json` in the app. Ctrl+C requests cancellation; logs and status are saved even on failure.
 
 Capture slow movement, stable exposure, sharp images and high overlap. Include viewpoint variation around the subject. A single forward pass, featureless water, moving vegetation or motion blur can prevent registration. Sparse results have arbitrary units and are not survey measurements.
 
@@ -123,7 +131,7 @@ drone-3d-studio/
 │   │   ├── video.py            # Metadata, streamed sampling, quality checks
 │   │   ├── meshes.py           # Model loading and procedural geometry
 │   │   └── samples.py          # Portable sample project factory
-│   ├── reconstruction/colmap.py # External-process service and backend protocol
+│   ├── reconstruction/colmap.py # Real sparse/dense backend and process service
 │   ├── viewer/canvas.py        # CPU Qt 3D projection, drawing and picking
 │   └── workers/jobs.py         # Cancellable QThread jobs
 ├── tests/
@@ -141,6 +149,7 @@ drone-3d-studio/
 │   ├── build_windows.cmd
 │   ├── make_sample.py
 │   ├── make_test_video.py
+│   ├── reconstruct_video.py
 │   └── capture_screenshots.py
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -185,7 +194,7 @@ Regenerate with `python scripts\capture_screenshots.py`. The script uses tempora
 
 - Video: MP4, MOV, AVI and MKV when the installed OpenCV/FFmpeg backend can decode the stream. Extensions alone do not guarantee codec support. Playback is silent and approximate for variable-frame-rate files.
 - Geometry: OBJ, STL, PLY, GLB and GLTF through Trimesh. GLTF external buffers must remain beside their JSON file. Scenes are flattened while preserving their node transforms. Textures/material fidelity and animation are not displayed.
-- The CPU viewer samples at most 1,800 triangles or 6,000 points per object for display. Dense meshes can look incomplete; full source geometry stays unchanged. Importing a very large model still needs enough RAM for that model. Use lightweight inspection assets on 8 GB systems.
+- The CPU viewer samples imported geometry at most 1,800 triangles or 6,000 points per object. Generated dense surfaces receive a coherent simplified inspection mesh instead of arbitrary triangle sampling, with full-resolution output retained on disk. Vertex colors are displayed; texture atlases are not. Importing a very large model still needs enough RAM for that model.
 - This is an object-level editor, not a CAD/mesh topology editor. Transforms are saved in project JSON and are not baked into the original mesh. Undo/redo and transformed mesh export are future work.
 - Video analysis samples from the beginning at the configured interval until the maximum sample count. Increase the interval to cover long videos within the cap. It compares only against the last accepted frame; it is not optical-flow overlap estimation.
 - Cancelled analysis may leave run-specific frame files on disk, but does not replace completed frame records. Old analysis runs are retained; remove unused files manually only after checking references.
@@ -214,4 +223,4 @@ Exact runtime pins were chosen after checking the official [Qt for Python instal
 
 ## Roadmap
 
-Future work: a GPU-accelerated optional viewport, texture display, dense-reconstruction backends, overlap estimation, undo/redo, transformed model export, portable project bundles and metric/geographic alignment.
+Future work: a GPU-accelerated optional viewport, texture atlases, additional reconstruction backends, overlap estimation, undo/redo, transformed model export, portable project bundles and metric/geographic alignment.

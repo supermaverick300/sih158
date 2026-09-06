@@ -117,7 +117,8 @@ def test_gltf_and_pointcloud_import(tmp_path):
     assert record.vertices == 3 and record.faces == 0
 
 
-def test_colmap_pipeline_contract_with_fake_runner(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dense", [False, True])
+def test_colmap_pipeline_contract_with_fake_runner(tmp_path, monkeypatch, dense):
     """Validate orchestration; this is explicitly not a real COLMAP reconstruction."""
     import trimesh
     from drone3d_studio.domain.models import Frame
@@ -141,10 +142,45 @@ def test_colmap_pipeline_contract_with_fake_runner(tmp_path, monkeypatch):
             (output / "cameras.bin").write_bytes(b"fake")
         elif args[1] == "model_converter":
             trimesh.points.PointCloud([[0, 0, 0], [1, 1, 1]]).export(args[args.index("--output_path") + 1])
+        elif args[1] == "poisson_mesher":
+            meshes.primitive("Box").export(args[args.index("--output_path") + 1])
         log("Exit code: 0")
     monkeypatch.setattr(colmap, "run_command", runner)
-    result = colmap.ColmapBackend().run(root, frames, threading.Event(), lambda *a: None)
+    result = colmap.ColmapBackend(output="Dense mesh (CUDA)" if dense else "Sparse cloud (CPU)").run(root, frames, threading.Event(), lambda *a: None)
     assert result[0][0].origin == "COLMAP"
     assert result[0][0].faces == 0
     assert any("--FeatureExtraction.use_gpu" in command and command[-1] == "0" for command in commands)
     assert any("--FeatureMatching.use_gpu" in command and command[-1] == "0" for command in commands)
+    if dense:
+        assert result[1][0].faces > 0 and not result[0][0].visible
+        assert [c[1] for c in commands[-4:]] == ["image_undistorter", "patch_match_stereo", "stereo_fusion", "poisson_mesher"]
+
+
+def test_colmap_environment_is_child_only(tmp_path, monkeypatch):
+    from drone3d_studio.reconstruction import colmap
+    import os
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    (tmp_path / "plugins").mkdir()
+    monkeypatch.setenv("QT_PLUGIN_PATH", "pyside-plugins")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    real_popen = colmap.subprocess.Popen
+    seen = []
+    def popen(args, **kwargs):
+        seen.append(kwargs["env"])
+        return real_popen([sys.executable, "-c", "print('ok')"], **kwargs)
+    monkeypatch.setattr(colmap.subprocess, "Popen", popen)
+    colmap.run_command([str(binary / "colmap.exe"), "-h"], threading.Event(), lambda s: None, tmp_path)
+    assert seen[0]["QT_PLUGIN_PATH"] == str(tmp_path / "plugins")
+    assert "QT_QPA_PLATFORM" not in seen[0]
+    assert os.environ["QT_PLUGIN_PATH"] == "pyside-plugins"
+
+
+def test_inspection_preserves_measured_colors():
+    original = meshes.primitive("Box")
+    original.visual.vertex_colors = np.array([[20 + i, 100, 200, 255] for i in range(len(original.vertices))], dtype=np.uint8)
+    inspection = original.copy()
+    before = inspection.vertices.copy()
+    meshes.transfer_vertex_colors(original, inspection, threading.Event())
+    np.testing.assert_array_equal(inspection.visual.vertex_colors, original.visual.vertex_colors)
+    np.testing.assert_array_equal(inspection.vertices, before)

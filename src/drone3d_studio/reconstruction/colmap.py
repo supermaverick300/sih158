@@ -1,4 +1,4 @@
-"""Optional CPU sparse reconstruction. No fabricated output or shell commands."""
+"""Real sparse and CUDA dense COLMAP reconstruction. No fabricated output."""
 import os
 from pathlib import Path
 import queue
@@ -9,7 +9,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from drone3d_studio.services.video import Cancelled
-from drone3d_studio.services.meshes import model_record
+from drone3d_studio.services.meshes import model_record, transfer_vertex_colors
 from drone3d_studio.persistence.store import resolve
 
 
@@ -18,9 +18,24 @@ class Backend(Protocol):
 
 
 def detect(configured=""):
-    candidate = configured or shutil.which("colmap.exe") or shutil.which("colmap")
+    candidate = configured or os.environ.get("COLMAP_EXECUTABLE") or shutil.which("colmap.exe") or shutil.which("colmap")
+    if not candidate:
+        # Search conventional user extraction locations, without storing machine paths.
+        downloads = [Path.home() / "Downloads"]
+        if os.name == "nt":
+            downloads.extend(Path(f"{letter}:/Downloads") for letter in "CDEFG" if Path(f"{letter}:/Downloads").is_dir())
+            import winreg
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+                    downloads.append(Path(os.path.expandvars(winreg.QueryValueEx(key, "{374DE290-123F-4565-9164-39C4925E467B}")[0])))
+            except OSError:
+                pass
+        for folder in downloads:
+            candidate = next(folder.glob("colmap*/bin/colmap.exe"), None)
+            if candidate:
+                break
     if not candidate or not Path(candidate).is_file():
-        raise ValueError("COLMAP is not installed or configured. Download the Windows release from https://github.com/colmap/colmap/releases, extract it, and set colmap.exe in Settings. CPU sparse reconstruction is supported; dense reconstruction is not bundled.")
+        raise ValueError("COLMAP was not found. In Settings choose the extracted bin/colmap.exe. Keep its bin and plugins folders together. Choose Sparse cloud for CPU processing or Dense mesh for CUDA processing.")
     if Path(candidate).suffix.lower() in (".bat", ".cmd"):
         raise ValueError("Choose the actual colmap.exe in the extracted distribution, not a batch launcher.")
     return str(Path(candidate).resolve())
@@ -28,8 +43,16 @@ def detect(configured=""):
 
 def run_command(args, cancel, log, cwd):
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    env = os.environ.copy()
+    binary = Path(args[0]).resolve().parent
+    plugins = binary.parent / "plugins"
+    if plugins.is_dir():
+        env["PATH"] = str(binary) + os.pathsep + env.get("PATH", "")
+        env["QT_PLUGIN_PATH"] = str(plugins)
+        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(plugins / "platforms")
+        env.pop("QT_QPA_PLATFORM", None)
     process = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, encoding="utf-8", errors="replace", creationflags=flags)
+                               text=True, encoding="utf-8", errors="replace", creationflags=flags, env=env)
     lines = queue.Queue()
     def reader():
         for line in process.stdout:
@@ -37,6 +60,8 @@ def run_command(args, cancel, log, cwd):
         lines.put(None)
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
+    from collections import deque
+    recent = deque(maxlen=8)
     try:
         while True:
             if cancel.is_set():
@@ -52,11 +77,12 @@ def run_command(args, cancel, log, cwd):
                 continue
             if line is None:
                 break
+            recent.append(line)
             log(line)
         code = process.wait()
         log(f"Exit code: {code}")
         if code != 0:
-            raise RuntimeError(f"COLMAP exited with code {code}. See project logs for details.")
+            raise RuntimeError(f"COLMAP {args[1] if len(args) > 1 else ''} exited with code {code}. See project logs for details.\n" + "\n".join(recent))
     finally:
         if process.poll() is None:
             process.kill()
@@ -66,8 +92,9 @@ def run_command(args, cancel, log, cwd):
 
 
 class ColmapBackend:
-    def __init__(self, executable=""):
+    def __init__(self, executable="", output="Sparse cloud (CPU)"):
         self.executable = executable
+        self.output = output
 
     def run(self, root, frames, cancel, progress):
         executable = detect(self.executable)
@@ -100,6 +127,10 @@ class ColmapBackend:
                 [executable, "sequential_matcher", "--database_path", database, f"--{matching}.use_gpu", "0"],
                 [executable, "mapper", "--database_path", database, "--image_path", str(images), "--output_path", str(sparse)],
             ]
+            # Keep extraction bounded on typical 8–16 GB laptops.
+            commands[0][2:2] = [f"--{extraction}.max_image_size", "1600", f"--{extraction}.num_threads", "4"]
+            if matching == "FeatureMatching":
+                commands[1][2:2] = ["--FeatureMatching.num_threads", "4"]
             for command in commands:
                 log("Running " + command[1])
                 run_command(command, cancel, log, work)
@@ -113,4 +144,46 @@ class ColmapBackend:
                 record, mesh = model_record(root, ply, "COLMAP")
                 record.name = f"COLMAP sparse cloud {index + 1}"
                 result.append((record, mesh))
+                if self.output == "Dense mesh (CUDA)":
+                    dense = work / f"dense-{index}"
+                    dense.mkdir()
+                    fused = dense / "fused.ply"
+                    surface = dense / "mesh.ply"
+                    dense_commands = [
+                        [executable, "image_undistorter", "--image_path", str(images), "--input_path", str(output), "--output_path", str(dense), "--output_type", "COLMAP", "--max_image_size", "1000"],
+                        [executable, "patch_match_stereo", "--workspace_path", str(dense), "--workspace_format", "COLMAP", "--PatchMatchStereo.max_image_size", "1000", "--PatchMatchStereo.cache_size", "1", "--PatchMatchStereo.num_threads", "4", "--PatchMatchStereo.geom_consistency", "1"],
+                        [executable, "stereo_fusion", "--workspace_path", str(dense), "--workspace_format", "COLMAP", "--input_type", "geometric", "--output_path", str(fused), "--StereoFusion.max_image_size", "1000", "--StereoFusion.cache_size", "1", "--StereoFusion.use_cache", "1", "--StereoFusion.num_threads", "4"],
+                        [executable, "poisson_mesher", "--input_path", str(fused), "--output_path", str(surface), "--PoissonMeshing.depth", "9", "--PoissonMeshing.num_threads", "4"],
+                    ]
+                    for command in dense_commands:
+                        log("Running " + command[1])
+                        try:
+                            run_command(command, cancel, log, work)
+                        except RuntimeError as exc:
+                            raise RuntimeError(f"Dense stage {command[1]} failed. Sparse output is retained at {ply}. Import it from Models or choose Sparse cloud (CPU). {exc}") from exc
+                    dense_record, dense_mesh = model_record(root, surface, "COLMAP")
+                    if dense_record.faces == 0:
+                        raise RuntimeError("COLMAP produced no surface faces. Try more overlapping, sharper footage. Sparse and dense point files are retained in reconstruction.")
+                    if dense_record.faces > 1600:
+                        # Simplify the surface coherently rather than dropping random
+                        # triangles in the CPU viewer. Keep full resolution on disk.
+                        preview = dense / "inspection-mesh.ply"
+                        log("Running mesh_simplifier for the CPU inspection viewport")
+                        run_command([executable, "mesh_simplifier", "--input_path", str(surface), "--output_path", str(preview), "--MeshSimplification.target_face_ratio", str(1600 / dense_record.faces)], cancel, log, work)
+                        preview_record, preview_mesh = model_record(root, preview, "COLMAP")
+                        transfer_vertex_colors(dense_mesh, preview_mesh, cancel)
+                        preview_mesh.export(str(preview))
+                        dense_record, dense_mesh = preview_record, preview_mesh
+                    dense_record.name = f"Reconstructed surface {index + 1}"
+                    log(f"Full-resolution surface: {surface}")
+                    record.visible = False
+                    result.append((dense_record, dense_mesh))
             return result
+
+
+def probe(executable, cancel, progress, cwd):
+    path = detect(executable)
+    lines = []
+    run_command([path, "-h"], cancel, lines.append, cwd)
+    version = next((line for line in lines if "COLMAP" in line), "COLMAP responded successfully")
+    return f"{version}\nExecutable: {path}\nReady for real reconstruction. Dense mesh additionally requires working CUDA support."

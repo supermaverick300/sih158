@@ -25,7 +25,8 @@ class Settings(Record):
     theme: Literal["Dark", "Light"] = "Dark"
     autosave_ms: int = Field(default=800, ge=200, le=60000)
     default_project_directory: str = ""
-    reconstruction_mode: Literal["Demo", "COLMAP"] = "Demo"
+    reconstruction_mode: Literal["Demo", "COLMAP"] = "COLMAP"
+    reconstruction_output: Literal["Sparse cloud (CPU)", "Dense mesh (CUDA)"] = "Dense mesh (CUDA)"
     executable: str = ""
     background: str = Field(default="#101923", pattern=r"^#[0-9a-fA-F]{6}$")
     logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

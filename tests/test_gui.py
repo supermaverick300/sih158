@@ -37,7 +37,7 @@ def test_complete_gui_workflow(qtbot, tmp_path):
     qtbot.waitUntil(lambda: window.job is None, timeout=15000)
     assert window.project.status == "Ready for reconstruction"
     assert window.frames.count() == 4
-    window.reconstruct()
+    window.reconstruct(demo=True)
     qtbot.waitUntil(lambda: window.job is None, timeout=15000)
     assert len(window.project.models) == 3
     key = window.project.models[0].id
@@ -118,4 +118,31 @@ def test_missing_model_and_config_autosave(qtbot, tmp_path):
     qtbot.waitUntil(lambda: not window.autosave.dirty)
     assert store.load(root).analysis.max_frames == 42
     assert store.load(root).analysis.interval == 2.5
+    window.close()
+
+
+def test_primary_reconstruction_never_falls_back_to_demo(qtbot, tmp_path, monkeypatch):
+    from drone3d_studio import application
+    from drone3d_studio.domain.models import Frame
+    window = Studio()
+    qtbot.addWidget(window)
+    root = tmp_path / "real"
+    project = store.create(root, "Real")
+    project.settings.reconstruction_mode = "Demo"  # Legacy project setting.
+    project.frames = [Frame(index=0, time=0, path="missing.jpg", thumbnail="", blur=10, accepted=True)]
+    window.activate(root, project)
+    errors = []
+    window.error = errors.append
+    class FailedBackend:
+        def __init__(self, *args):
+            pass
+        def run(self, *args):
+            raise RuntimeError("Real reconstruction failed")
+    monkeypatch.setattr(application, "ColmapBackend", FailedBackend)
+    window.reconstruct()
+    qtbot.waitUntil(lambda: window.job is None)
+    assert project.settings.reconstruction_mode == "COLMAP"
+    assert project.status == "Failed"
+    assert project.models == []
+    assert errors == ["Real reconstruction failed"]
     window.close()

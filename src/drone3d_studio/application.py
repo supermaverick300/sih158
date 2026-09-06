@@ -9,8 +9,8 @@ import shutil
 import sys
 
 import cv2
-from PySide6.QtCore import Qt, QTimer, QSettings, QSize
-from PySide6.QtGui import QAction, QImage, QPixmap, QIcon, QKeySequence, QFontDatabase
+from PySide6.QtCore import Qt, QTimer, QSettings, QSize, QUrl
+from PySide6.QtGui import QAction, QImage, QPixmap, QIcon, QKeySequence, QFontDatabase, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QLineEdit,
@@ -23,7 +23,7 @@ from drone3d_studio.domain.models import Project, Settings, AnalysisConfig, Tran
 from drone3d_studio.persistence import store
 from drone3d_studio.persistence.autosave import Autosave
 from drone3d_studio.services import video, meshes
-from drone3d_studio.reconstruction.colmap import ColmapBackend, detect
+from drone3d_studio.reconstruction.colmap import ColmapBackend, detect, probe
 from drone3d_studio.viewer.canvas import SceneCanvas
 from drone3d_studio.workers.jobs import Job
 
@@ -96,6 +96,11 @@ class Studio(QMainWindow):
             self.defaults = Settings.model_validate_json(self.prefs.value("settings", self.defaults.model_dump_json()))
         except ValueError:
             logging.warning("Invalid saved settings; using defaults")
+        self.defaults.reconstruction_mode = "COLMAP"
+        try:
+            self.defaults.executable = detect(self.defaults.executable)
+        except ValueError:
+            pass
         self.autosave = Autosave(self.save_current, self)
         self.autosave.state.connect(self.statusBar().showMessage)
         self.play_timer = QTimer(self)
@@ -239,13 +244,13 @@ class Studio(QMainWindow):
         self.model_list = QListWidget()
         self.model_list.currentRowChanged.connect(self.model_selected)
         self.model_list.itemChanged.connect(self.visibility_changed)
-        layout.addLayout(row(button("Import model…", self.import_model, True), button("Generate scene", self.reconstruct)))
+        layout.addLayout(row(button("Import model…", self.import_model, True), button("Reconstruct footage", self.reconstruct), button("Generate demo (test only)", lambda: self.reconstruct(demo=True))))
         layout.addLayout(row(*[button("+ " + kind, lambda k=kind: self.add_primitive(k)) for kind in ("Drone", "Box", "Sphere")]))
         layout.addWidget(self.model_list, 1)
         self.model_info = QLabel("Select a model to view its details.")
         self.model_info.setWordWrap(True)
         layout.addWidget(self.model_info)
-        layout.addLayout(row(button("Rename model", self.rename_model), button("Remove from scene", self.remove_model), button("Open in scene", lambda: self.nav.setCurrentRow(4))))
+        layout.addLayout(row(button("Rename model", self.rename_model), button("Remove from scene", self.remove_model), button("Open in scene", lambda: self.nav.setCurrentRow(4)), button("Reconstruction files", self.open_reconstruction_files)))
 
     def build_scene(self):
         layout = self.page("Scene workspace", "Select an object to edit its transform. Gold highlights the selection. Demo objects are not reconstructed footage.")
@@ -253,7 +258,7 @@ class Studio(QMainWindow):
         self.views.addItems(["Perspective", "Front", "Back", "Left", "Right", "Top", "Bottom"])
         self.canvas = SceneCanvas()
         self.views.currentTextChanged.connect(self.canvas.view)
-        layout.addLayout(row(self.views, button("Frame all", self.canvas.frame_all), button("Reset camera", self.reset_camera)))
+        layout.addLayout(row(self.views, button("Frame all", self.canvas.frame_all), button("Face surface", self.canvas.face_surface), button("Reset camera", self.reset_camera)))
         split = QSplitter()
         split.addWidget(self.canvas)
         panel = QWidget()
@@ -302,8 +307,8 @@ class Studio(QMainWindow):
         layout = self.page("Settings", "Settings are saved with the project and used as defaults for new projects.")
         form = QFormLayout()
         self.setting_widgets = {}
-        options = {"theme": ["Dark", "Light"], "reconstruction_mode": ["Demo", "COLMAP"], "logging_level": ["DEBUG", "INFO", "WARNING", "ERROR"]}
-        labels = {"theme": "Theme", "autosave_ms": "Autosave debounce (ms)", "default_project_directory": "Default project directory", "reconstruction_mode": "Reconstruction mode", "executable": "COLMAP executable (.exe)", "background": "Viewer background (#RRGGBB)", "logging_level": "Logging level"}
+        options = {"theme": ["Dark", "Light"], "reconstruction_mode": ["COLMAP"], "reconstruction_output": ["Dense mesh (CUDA)", "Sparse cloud (CPU)"], "logging_level": ["DEBUG", "INFO", "WARNING", "ERROR"]}
+        labels = {"theme": "Theme", "autosave_ms": "Autosave debounce (ms)", "default_project_directory": "Default project directory", "reconstruction_mode": "Reconstruction backend", "reconstruction_output": "Reconstruction output", "executable": "COLMAP executable (.exe)", "background": "Viewer background (#RRGGBB)", "logging_level": "Logging level"}
         for key, value in self.defaults.model_dump().items():
             if key in options:
                 widget = QComboBox()
@@ -322,7 +327,7 @@ class Studio(QMainWindow):
         extraction_help.setWordWrap(True)
         layout.addWidget(extraction_help)
         layout.addLayout(row(button("Choose COLMAP executable…", self.choose_executable), button("Check COLMAP installation", self.check_colmap)))
-        info = QLabel("Demo: procedural geometry, always available.\nCOLMAP: optional external software; this integration produces a real sparse point cloud on CPU. No dense mesh or textures. Download: https://github.com/colmap/colmap/releases")
+        info = QLabel("Reconstruct footage uses real COLMAP photogrammetry. Dense mesh requires a CUDA GPU and produces a PLY surface. Sparse cloud runs on CPU. Dense processing is capped at 1000-pixel images with 1 GB caches. Procedural demos are separate test actions in Models. Download: https://github.com/colmap/colmap/releases")
         info.setWordWrap(True)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(info)
@@ -455,6 +460,8 @@ class Studio(QMainWindow):
                 self.log(status)
         self.refresh()
         self.canvas.frame_all()
+        if any(m.origin == "COLMAP" and m.faces for m in self.project.models):
+            self.canvas.face_surface()
 
     def remember(self, root):
         recent = self.prefs.value("recent", [], type=list)
@@ -747,19 +754,20 @@ class Studio(QMainWindow):
         accepted = sum(f.accepted for f in self.project.frames)
         self.frame_summary.setText(f"{len(self.project.frames)} sampled · {accepted} accepted · {len(self.project.frames) - accepted} rejected · {self.project.analysis_seconds:.2f}s")
 
-    def reconstruct(self):
+    def reconstruct(self, demo=False):
         if not self.require_project() or not self.idle():
             return
         if not self.project.frames:
             self.error("Analyze your video first. You can also add demo primitives from Models without a video.")
             return
-        mode = self.project.settings.reconstruction_mode
+        mode = "Demo" if demo else "COLMAP"
+        self.project.settings.reconstruction_mode = mode
         self.project.status = "Reconstruction running"
         self.project.reconstruction_status = f"{mode} running"
         if mode == "Demo":
             function = lambda cancel, progress: meshes.demo_scene(self.root, cancel, progress)
         else:
-            backend = ColmapBackend(self.project.settings.executable)
+            backend = ColmapBackend(self.project.settings.executable, self.project.settings.reconstruction_output)
             function = lambda cancel, progress: backend.run(self.root, self.project.frames, cancel, progress)
         self.run_job(function, self.scene_done)
         self.changed()
@@ -769,10 +777,12 @@ class Studio(QMainWindow):
             self.project.models.append(model)
             self.meshes[model.id] = mesh
         self.project.status = "Scene ready"
-        self.project.reconstruction_status = "Demo scene — procedural geometry, NOT photogrammetry" if result and result[0][0].origin == "Demo" else "Succeeded — real COLMAP sparse point cloud"
+        self.project.reconstruction_status = "Demo scene — procedural geometry, NOT photogrammetry" if result and result[0][0].origin == "Demo" else "Succeeded — real COLMAP surface mesh" if any(m.faces for m, mesh in result) else "Succeeded — real COLMAP sparse point cloud"
         self.log(self.project.reconstruction_status)
         self.changed()
         self.canvas.frame_all()
+        if any(m.origin == "COLMAP" and m.faces for m, mesh in result):
+            self.canvas.face_surface()
         self.nav.setCurrentRow(4)
 
     def import_model(self):
@@ -781,6 +791,10 @@ class Studio(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Import model", "", "3D geometry (*.obj *.stl *.ply *.glb *.gltf)")
         if path:
             self.run_job(lambda cancel, progress: [meshes.model_record(self.root, Path(path))], self.models_added)
+
+    def open_reconstruction_files(self):
+        if self.require_project():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.root / "reconstruction")))
 
     def add_primitive(self, kind):
         if self.require_project() and self.idle():
@@ -951,11 +965,9 @@ class Studio(QMainWindow):
             self.setting_widgets["executable"].setText(path)
 
     def check_colmap(self):
-        try:
-            path = detect(self.setting_widgets["executable"].text())
-            QMessageBox.information(self, "COLMAP", f"Executable found: {path}\nRuntime compatibility will be checked when reconstruction runs.")
-        except Exception as exc:
-            self.error(exc)
+        if self.idle():
+            executable = self.setting_widgets["executable"].text()
+            self.run_job(lambda cancel, progress: probe(executable, cancel, progress, self.root or Path.cwd()), lambda message: QMessageBox.information(self, "COLMAP check", message))
 
     def run_job(self, function, success):
         if self.job is not None:

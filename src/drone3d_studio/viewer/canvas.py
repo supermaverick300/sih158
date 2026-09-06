@@ -21,6 +21,7 @@ class SceneCanvas(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setToolTip("Left drag: orbit · right/middle drag: pan · wheel: zoom · click: select · arrows: move XY · PageUp/Down: move Z")
         self.models, self.geometry, self.hit = [], {}, []
+        self.vertex_colors = {}
         self.selection = ""
         self.background = "#101923"
         self.target = np.zeros(3)
@@ -34,13 +35,22 @@ class SceneCanvas(QWidget):
             if key not in self.geometry:
                 vertices = np.asarray(mesh.vertices)
                 faces = np.asarray(getattr(mesh, "faces", []), dtype=int)
+                visual = getattr(mesh, "visual", None)
+                raw_colors = getattr(mesh, "colors", None) if not len(faces) else getattr(visual, "vertex_colors", None) if getattr(visual, "defined", False) else None
+                raw_colors = np.asarray(raw_colors) if raw_colors is not None else None
+                if raw_colors is not None and len(raw_colors) != len(vertices):
+                    raw_colors = None
                 if len(faces):
                     faces = faces[::max(1, math.ceil(len(faces) / 1800))]
                     used, inverse = np.unique(faces, return_inverse=True)
                     self.geometry[key] = (vertices[used], inverse.reshape((-1, 3)))
+                    self.vertex_colors[key] = raw_colors[used] if raw_colors is not None else None
                 else:
-                    self.geometry[key] = (vertices[::max(1, math.ceil(len(vertices) / 6000))], np.empty((0, 3), dtype=int))
+                    step = max(1, math.ceil(len(vertices) / 6000))
+                    self.geometry[key] = (vertices[::step], np.empty((0, 3), dtype=int))
+                    self.vertex_colors[key] = raw_colors[::step] if raw_colors is not None else None
         self.geometry = {k: v for k, v in self.geometry.items() if any(m.id == k for m in models)}
+        self.vertex_colors = {k: v for k, v in self.vertex_colors.items() if k in self.geometry}
         self.update()
 
     def transformed(self, model):
@@ -62,6 +72,20 @@ class SceneCanvas(QWidget):
     def view(self, name):
         self.yaw, self.pitch = {"Perspective": (40, 30), "Front": (-90, 0), "Back": (90, 0), "Left": (180, 0), "Right": (0, 0), "Top": (0, 89.9), "Bottom": (0, -89.9)}[name]
         self.update()
+
+    def face_surface(self):
+        """Look towards the principal surface without altering model coordinates."""
+        arrays = [self.transformed(m)[0] for m in self.models if m.visible and m.faces and m.id in self.geometry]
+        if not arrays:
+            return
+        vertices = np.concatenate(arrays)
+        _, _, axes = np.linalg.svd(vertices - vertices.mean(axis=0), full_matrices=False)
+        direction = axes[-1]
+        if direction[2] < 0:
+            direction = -direction
+        self.yaw = float(np.degrees(np.arctan2(direction[1], direction[0])))
+        self.pitch = float(np.degrees(np.arcsin(np.clip(direction[2], -1, 1))))
+        self.frame_all()
 
     def basis(self):
         yaw, pitch = np.radians([self.yaw, self.pitch])
@@ -103,17 +127,20 @@ class SceneCanvas(QWidget):
             vertices, faces = self.transformed(model)
             screen, depth = self.project(vertices)
             color = QColor("#ffcb70" if model.id == self.selection else colors[index % len(colors)])
+            rgb = self.vertex_colors.get(model.id) if model.id != self.selection else None
             if len(faces):
                 for face in faces:
                     if np.any(depth[face] <= .05):
                         continue
                     polygon = QPolygonF([QPointF(*p) for p in screen[face]])
+                    if rgb is not None:
+                        color = QColor(*map(int, rgb[face, :3].mean(axis=0)))
                     normal = np.cross(vertices[face[1]] - vertices[face[0]], vertices[face[2]] - vertices[face[0]])
                     shade = .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
                     tint = QColor.fromRgbF(min(1, color.redF() * shade), min(1, color.greenF() * shade), min(1, color.blueF() * shade))
                     triangles.append((float(depth[face].mean()), polygon, tint, model.id))
             else:
-                points.extend((float(d), QPointF(*p), color, model.id) for p, d in zip(screen, depth) if d > .05)
+                points.extend((float(d), QPointF(*p), QColor(*map(int, rgb[i, :3])) if rgb is not None else color, model.id) for i, (p, d) in enumerate(zip(screen, depth)) if d > .05)
         for depth, shape, color, key in sorted(triangles + points, key=lambda x: -x[0]):
             if isinstance(shape, QPolygonF):
                 painter.setPen(QPen(color.darker(115), .4))
@@ -127,7 +154,7 @@ class SceneCanvas(QWidget):
         painter.drawText(18, 27, "SCENE / CPU VIEWPORT")
         painter.drawText(18, self.height() - 18, "Orbit: drag   •   Pan: right drag   •   Zoom: wheel   •   Select: click")
         if not self.models:
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Your scene starts here\nGenerate a demo or import a model")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Your scene starts here\nAnalyze your footage, then reconstruct with COLMAP")
         painter.end()
 
     def mousePressEvent(self, event):
