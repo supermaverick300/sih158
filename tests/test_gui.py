@@ -34,6 +34,7 @@ def test_complete_gui_workflow(qtbot, tmp_path):
     assert window.project.video.frame_count == 48
     window.blur.setValue(0)
     window.analysis_widgets["sampling_mode"].setCurrentText("Fixed")
+    window.project.pipeline.capture_mode = "General"  # Legacy four-sample fixture.
     window.start_analysis()
     qtbot.waitUntil(lambda: window.job is None, timeout=15000)
     assert window.project.status == "Ready for reconstruction"

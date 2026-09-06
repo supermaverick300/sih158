@@ -177,6 +177,14 @@ def run_depth_pipeline(dense, text_model, weights, config, cancel, progress):
     del predictor
     if len(accepted) < 3:
         raise ValueError("Fewer than three AI depth maps passed SfM calibration. See ai-depth/calibration.json; no cloud was fabricated.")
+    if config.capture_mode == "Single pass":
+        from drone3d_studio.reconstruction.visible_surface import build_surface
+        maps = [np.load(path,mmap_mode="r") for path in paths]
+        try:
+            return build_surface(accepted,maps,dense/"images",intrinsics,dense/"ai-visible-surface.ply",config.depth_stride,cancel,progress)
+        finally:
+            for depth in maps:
+                depth._mmap.close()
     output = dense / "ai-fused.ply"
     count = fuse(accepted, paths, dense / "images", intrinsics, output, config, cancel, progress)
     progress(-1, f"Fused {count} colored AI depth points")

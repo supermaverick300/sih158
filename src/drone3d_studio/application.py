@@ -196,7 +196,7 @@ class Studio(QMainWindow):
         self.stats.setStyleSheet("font-size:15px;padding:20px;background:#1a2635;border-radius:9px")
         layout.addWidget(self.stats)
         layout.addLayout(row(button("Import video", self.import_video, True), button("Analyze frames", self.start_analysis), button("Generate scene", self.reconstruct), button("Inspect scene", lambda: self.nav.setCurrentRow(4))))
-        guidance = QLabel("Capture tip: use slow movement, stable exposure, sharp footage and high overlap. A single pass may not provide enough angles for reliable reconstruction.")
+        guidance = QLabel("Single-pass workflow: fly steadily over or past a static scene with overlapping sharp frames. No orbit is required. Camera translation supplies depth information; pure rotation does not. Only visible surfaces can be reconstructed.")
         guidance.setWordWrap(True)
         layout.addWidget(guidance)
         self.logs = QPlainTextEdit()
@@ -370,11 +370,13 @@ class Studio(QMainWindow):
         form = QFormLayout(group)
         self.pipeline_widgets = {}
         config = PipelineConfig()
-        for key, label in (("depth_method", "Depth method"), ("weights_path", "Local AI weights folder"), ("device", "AI inference device"), ("align_gps", "Align SfM to GPS before depth fusion"), ("alignment_max_error_m", "GPS inlier threshold (m)"), ("fusion_voxel_size", "AI fusion voxel size (scene units)"), ("depth_stride", "AI depth pixel stride")):
+        for key, label in (("capture_mode", "Capture workflow"), ("horizontal_fov_deg", "Known horizontal FOV (degrees; 0 estimates)"), ("depth_method", "Depth method"), ("weights_path", "Local AI weights folder"), ("device", "AI inference device"), ("align_gps", "Align SfM to GPS before depth fusion"), ("alignment_max_error_m", "GPS inlier threshold (m)"), ("fusion_voxel_size", "AI cloud voxel size (General workflow)"), ("depth_stride", "Depth surface pixel stride")):
             value = getattr(config, key)
-            if key in ("depth_method", "device"):
+            if key in ("depth_method", "device", "capture_mode"):
                 widget = QComboBox()
-                widget.addItems(["COLMAP stereo", "Depth Anything V2"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
+                widget.addItems(["Single pass", "General"] if key == "capture_mode" else ["COLMAP stereo", "Depth Anything V2"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
+            elif key == "horizontal_fov_deg":
+                widget = spin(0,0,150,2)
             elif key == "align_gps":
                 widget = QCheckBox()
             elif key == "weights_path":
@@ -385,7 +387,7 @@ class Studio(QMainWindow):
             form.addRow(label, widget)
         form.addRow(button("Choose AI weights folder…", self.choose_weights))
         form.addRow(button("Check AI installation", self.check_ai))
-        help_text = QLabel("Depth Anything V2 produces a colored point cloud and overrides the COLMAP output choice above. Its relative depth is calibrated using triangulated SfM points. Units become meters only after successful GPS alignment. Without telemetry, leave GPS spacing at 0 and alignment unchecked. Run scripts\\setup_ai_windows.cmd once to install AI dependencies and weights.")
+        help_text = QLabel("Single pass reconstructs visible depth surfaces from one continuous translating flight, leaving unknown areas open. COLMAP stereo requires CUDA; Depth Anything V2 uses calibrated estimated depth and overrides the output choice above. General retains the previous meshing/cloud workflow. Supply horizontal FOV only if known for this exact rectified video and crop; 0 lets COLMAP estimate it. Without telemetry leave GPS spacing at 0 and alignment unchecked. AI setup: scripts\\setup_ai_windows.cmd.")
         help_text.setWordWrap(True)
         form.addRow(help_text)
         layout.addWidget(group)
@@ -813,6 +815,7 @@ class Studio(QMainWindow):
 
     def analysis_config(self):
         values = {key: widget.currentText() if isinstance(widget, QComboBox) else widget.value() for key, widget in self.analysis_widgets.items()}
+        values["cover_entire_video"] = self.project.pipeline.capture_mode == "Single pass" if self.project else True
         return AnalysisConfig(interval=self.interval.value(), blur_threshold=self.blur.value(), duplicate_threshold=self.duplicate_threshold.value(), max_frames=self.maximum.value(), **values)
 
     def analysis_done(self, result):
@@ -864,6 +867,8 @@ class Studio(QMainWindow):
         self.project.reconstruction_status = "Demo scene — procedural geometry, NOT photogrammetry" if result and result[0][0].origin == "Demo" else "Succeeded — real COLMAP surface mesh" if any(m.faces for m, mesh in result) else "Succeeded — real COLMAP sparse point cloud"
         if any(m.origin == "Depth Anything V2" for m, mesh in result):
             self.project.reconstruction_status = "Succeeded — SfM-calibrated Depth Anything V2 colored cloud"
+        if result and result[0][0].origin != "Demo" and self.project.pipeline.capture_mode == "Single pass":
+            self.project.reconstruction_status = "Succeeded — single-pass visible surface; unseen areas not reconstructed" if any(m.faces for m, mesh in result) else "Succeeded — single-pass sparse cloud; unseen areas not reconstructed"
         if result and result[0][0].origin != "Demo":
             self.project.reconstruction_status += " · GPS-aligned ENU meters" if self.project.pipeline.align_gps else " · arbitrary SfM units (no GPS)"
         self.log(self.project.reconstruction_status)

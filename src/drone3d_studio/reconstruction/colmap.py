@@ -122,6 +122,7 @@ class ColmapBackend:
 
     def _run(self, root, frames, cancel, progress):
         executable = detect(self.executable)
+        single_pass = self.pipeline.capture_mode == "Single pass"
         ai = self.pipeline.depth_method == "Depth Anything V2"
         weights = Path(self.pipeline.weights_path)
         if not weights.is_absolute():
@@ -165,12 +166,25 @@ class ColmapBackend:
             commands[0][2:2] = [f"--{extraction}.max_image_size", "1600", f"--{extraction}.num_threads", "4"]
             if matching == "FeatureMatching":
                 commands[1][2:2] = ["--FeatureMatching.num_threads", "4"]
+            if single_pass:
+                commands[1] += ["--SequentialMatching.overlap", "20", "--SequentialMatching.loop_detection", "0"]
+                commands[2] += ["--Mapper.init_min_tri_angle","4","--Mapper.init_max_forward_motion","0.99"]
+                log("Single pass: matching overlapping frames along the flight; no orbit or loop closure required.")
+                if self.pipeline.horizontal_fov_deg:
+                    import cv2
+                    import numpy as np
+                    image = cv2.imdecode(np.fromfile(str(images / "000000.jpg"),np.uint8),cv2.IMREAD_COLOR)
+                    h,w = image.shape[:2]
+                    focal = w / (2*np.tan(np.radians(self.pipeline.horizontal_fov_deg)/2))
+                    commands[0] += ["--ImageReader.camera_model","PINHOLE","--ImageReader.camera_params",f"{focal},{focal},{w/2},{h/2}"]
+                    commands[2] += ["--Mapper.ba_refine_focal_length","0","--Mapper.ba_refine_principal_point","0","--Mapper.ba_refine_extra_params","0"]
+                    log("Using user-supplied horizontal FOV for a rectified video; focal length is fixed.")
             for command in commands:
                 log("Running " + command[1])
                 run_command(command, cancel, log, work)
             outputs = sorted(p.parent for p in sparse.glob("*/cameras.bin"))
             if not outputs:
-                raise RuntimeError("COLMAP could not register a scene. Try sharper footage with more overlap and viewpoint variation.")
+                raise RuntimeError("COLMAP could not register a scene. A single translating pass is sufficient in principle, but this input needs sharper overlapping frames, usable parallax, or known camera calibration.")
             result = []
             for index, output in enumerate(outputs):
                 component = work / f"component-{index}"
@@ -196,6 +210,15 @@ class ColmapBackend:
                     cloud_path = run_depth_pipeline(dense, text_model, weights, self.pipeline, cancel, progress)
                     ai_record, ai_cloud = model_record(root, cloud_path, "Depth Anything V2")
                     ai_record.name = "Depth Anything V2 fused cloud" + (" · ENU metres" if self.pipeline.align_gps else " · SfM units")
+                    if single_pass:
+                        if ai_record.faces > 12000:
+                            preview = dense / "ai-inspection-mesh.ply"
+                            run_command([executable,"mesh_simplifier","--input_path",str(cloud_path),"--output_path",str(preview),"--MeshSimplification.target_face_ratio",str(12000/ai_record.faces)],cancel,log,work)
+                            preview_record,preview_mesh = model_record(root,preview,"Depth Anything V2")
+                            transfer_vertex_colors(ai_cloud,preview_mesh,cancel)
+                            preview_mesh.export(str(preview))
+                            ai_record,ai_cloud = preview_record,preview_mesh
+                        ai_record.name = "Single-pass AI visible surface (estimated depth)"
                     record.visible = False
                     result.append((ai_record, ai_cloud))
                     continue
@@ -210,26 +233,35 @@ class ColmapBackend:
                         [executable, "stereo_fusion", "--workspace_path", str(dense), "--workspace_format", "COLMAP", "--input_type", "geometric", "--output_path", str(fused), "--StereoFusion.max_image_size", "1000", "--StereoFusion.cache_size", "1", "--StereoFusion.use_cache", "1", "--StereoFusion.num_threads", "4"],
                         [executable, "poisson_mesher", "--input_path", str(fused), "--output_path", str(surface), "--PoissonMeshing.depth", "9", "--PoissonMeshing.num_threads", "4"],
                     ]
+                    if single_pass:
+                        dense_commands = dense_commands[:3]
                     for command in dense_commands:
                         log("Running " + command[1])
                         try:
                             run_command(command, cancel, log, work)
                         except RuntimeError as exc:
                             raise RuntimeError(f"Dense stage {command[1]} failed. Sparse output is retained at {ply}. Import it from Models or choose Sparse cloud (CPU). {exc}") from exc
+                    if single_pass:
+                        from drone3d_studio.reconstruction.visible_surface import from_stereo
+                        text_model = dense / "text-model"
+                        text_model.mkdir()
+                        run_command([executable,"model_converter","--input_path",str(dense/"sparse"),"--output_path",str(text_model),"--output_type","TXT"],cancel,log,work)
+                        surface = from_stereo(dense,text_model,self.pipeline,cancel,progress)
                     dense_record, dense_mesh = model_record(root, surface, "COLMAP")
                     if dense_record.faces == 0:
                         raise RuntimeError("COLMAP produced no surface faces. Try more overlapping, sharper footage. Sparse and dense point files are retained in reconstruction.")
-                    if dense_record.faces > 1600:
+                    preview_faces = 12000 if single_pass else 1600
+                    if dense_record.faces > preview_faces:
                         # Simplify the surface coherently rather than dropping random
                         # triangles in the CPU viewer. Keep full resolution on disk.
                         preview = dense / "inspection-mesh.ply"
                         log("Running mesh_simplifier for the CPU inspection viewport")
-                        run_command([executable, "mesh_simplifier", "--input_path", str(surface), "--output_path", str(preview), "--MeshSimplification.target_face_ratio", str(1600 / dense_record.faces)], cancel, log, work)
+                        run_command([executable, "mesh_simplifier", "--input_path", str(surface), "--output_path", str(preview), "--MeshSimplification.target_face_ratio", str(preview_faces / dense_record.faces)], cancel, log, work)
                         preview_record, preview_mesh = model_record(root, preview, "COLMAP")
                         transfer_vertex_colors(dense_mesh, preview_mesh, cancel)
                         preview_mesh.export(str(preview))
                         dense_record, dense_mesh = preview_record, preview_mesh
-                    dense_record.name = f"Reconstructed surface {index + 1}"
+                    dense_record.name = f"Single-pass visible surface {index + 1} (preview)" if single_pass else f"Reconstructed surface {index + 1}"
                     log(f"Full-resolution surface: {surface}")
                     record.visible = False
                     result.append((dense_record, dense_mesh))

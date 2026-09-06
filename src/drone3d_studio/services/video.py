@@ -88,6 +88,8 @@ def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress, te
     if config.gps_spacing_m > 0 and not telemetry:
         raise ValueError("GPS keyframe spacing is enabled but telemetry is missing. Import a synchronized CSV or set spacing to zero.")
     step = base_step = max(1, round(config.interval * info.fps))
+    if config.cover_entire_video and info.frame_count > base_step * config.max_frames:
+        progress(0, "Sample budget spreads frames across the whole pass. Increase maximum samples if the gaps remove needed overlap.")
     run = uuid4().hex[:12]
     cap = cv2.VideoCapture(str(path))
     records, last_accepted, previous = [], None, None
@@ -138,10 +140,18 @@ def analyze(path: Path, root: Path, config: AnalysisConfig, cancel, progress, te
             progress(min(99, round(percent * 100)), f"Sampled {len(records)} · {category} · sharpness {blur:.1f} · features {features} · clipped {clipped:.1%}")
             if config.sampling_mode == "Adaptive" and len(records) > 1:
                 step = next_step(step, displacement, base_step)
-            index += step
+            if config.cover_entire_video:
+                if index == info.frame_count - 1:
+                    break
+                remaining = config.max_frames - len(records)
+                if remaining > 0:
+                    step = max(step, int(np.ceil((info.frame_count - 1 - index) / remaining)))
+                index = min(index + step, info.frame_count - 1)
+            else:
+                index += step
         elapsed = time.monotonic() - started
         import json
-        atomic_write(root / "frames" / f"analysis-{run}.json", json.dumps({"seconds": elapsed, "frames": [r.model_dump() for r in records]}, indent=2))
+        atomic_write(root / "frames" / f"analysis-{run}.json", json.dumps({"seconds": elapsed, "configuration":config.model_dump(), "sampled_span_seconds":records[-1].time-records[0].time if records else 0, "frames": [r.model_dump() for r in records]}, indent=2))
         progress(100, f"Analysis complete: {len(records)} candidates, {sum(r.accepted for r in records)} keyframes")
         return records, elapsed
     finally:

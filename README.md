@@ -4,11 +4,13 @@ A locally runnable Windows desktop MVP for turning drone video into inspected fr
 
 **New: [seven-stage setup and download guide](docs/PIPELINE_SETUP.md)** — adaptive sampling, frame quality, GPS keyframes, COLMAP SfM, local Depth Anything V2, verified ENU alignment and colored depth fusion. Includes exact settings, telemetry CSV requirements, actual validation results and limitations of the user's stock clip.
 
+**Single continuous flight:** new projects default to Single pass, with temporal matching and open visible-surface reconstruction. No orbit or additional flights are required, but overlapping frames and camera translation are essential. See the [single-pass instructions and limitations](docs/SINGLE_PASS.md).
+
 ## Demo versus real reconstruction
 
 **Demo mode creates procedural geometry. It does not recover the scene in your footage.** Import a video, run real frame analysis, then generate a clearly labelled drone, box and sphere to try editing, saving and reopening a scene.
 
-**The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **COLMAP stereo** and **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo, depth fusion and Poisson meshing. A simplified, colored inspection surface opens in the viewer; full-resolution `mesh.ply` and dense `fused.ply` remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. Alternatively, **Depth Anything V2** generates calibrated, multi-view-filtered colored point clouds. Optional GPS alignment requires synchronized flight telemetry. Texture atlases remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.
+**The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **COLMAP stereo** and **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo and depth fusion. Single pass builds an open `visible-surface.ply`; General uses Poisson meshing to produce `mesh.ply`. A simplified colored preview opens in the viewer; full outputs remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. Alternatively, **Depth Anything V2** generates calibrated, multi-view-filtered depth, yielding an open surface in Single pass or a colored point cloud in General. Optional GPS alignment requires synchronized flight telemetry. Texture atlases remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.
 
 ## Windows installation
 
@@ -81,7 +83,7 @@ To test with real drone footage, supply your own local video through the file pi
 4. Click **Generate scene**. Follow the live Dashboard log or `<project>/logs/colmap.log`. Progress is indeterminate during external commands because COLMAP does not provide a reliable total percentage.
 5. On success, reconstructed surfaces or sparse components become editable objects. Dense mode hides the sparse cloud when its surface is available. On failure, the UI records Failed and the detailed exit/log information. Completed intermediate files remain available through **Models → Reconstruction files**; a failed dense stage never claims a successful mesh. Cancellation terminates the active process and retains any previously completed scene.
 
-The backend checks installed help text to select old `SiftExtraction/SiftMatching` or newer `FeatureExtraction/FeatureMatching` GPU option names. Feature extraction/matching use CPU; dense stereo uses CUDA. Extraction is capped at 1600 pixels/four threads; dense images at 1000 pixels, caches at 1 GB, fusion/meshing at four threads and Poisson depth at nine. The surface is simplified to about 1600 faces for the CPU viewer while retaining the original. Another backend can implement the protocol in `reconstruction/colmap.py` without adding subprocess code to the UI.
+The backend checks installed help text to select old `SiftExtraction/SiftMatching` or newer `FeatureExtraction/FeatureMatching` GPU option names. Feature extraction/matching use CPU; dense stereo uses CUDA. Extraction is capped at 1600 pixels/four threads; dense images at 1000 pixels, caches at 1 GB, fusion/meshing at four threads and General-mode Poisson depth at nine. The surface preview targets 12,000 faces in Single pass or 1600 in General, retaining the original. Another backend can implement the protocol in `reconstruction/colmap.py` without adding subprocess code to the UI.
 
 For repeatable diagnostics without the GUI:
 
@@ -91,7 +93,7 @@ python scripts\reconstruct_video.py "D:\path\flight.mp4" output\MyFlight --colma
 
 The destination must be a new directory. Add `--sparse` for CPU-only output. Open the resulting `project.drone3d.json` in the app. Ctrl+C requests cancellation; logs and status are saved even on failure.
 
-Capture slow movement, stable exposure, sharp images and high overlap. Include viewpoint variation around the subject. A single forward pass, featureless water, moving vegetation or motion blur can prevent registration or reliable depth calibration. Results have arbitrary units unless GPS alignment succeeds; alignment alone does not establish survey accuracy.
+Capture slow translation, stable exposure, sharp images and high overlap. A single forward pass is supported; negligible parallax, featureless water, moving vegetation or motion blur can prevent registration or reliable depth calibration. Results have arbitrary units unless GPS alignment succeeds; alignment alone does not establish survey accuracy.
 
 ## Persistence and portable projects
 

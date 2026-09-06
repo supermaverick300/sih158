@@ -25,6 +25,7 @@ class AnalysisConfig(Record):
     gps_spacing_m: float = Field(default=0, ge=0, le=1000)
     telemetry_offset_s: float = Field(default=0, ge=-86400, le=86400)
     telemetry_max_gap_s: float = Field(default=2, gt=0, le=60)
+    cover_entire_video: bool = False
 
 
 class GPSFix(Record):
@@ -35,6 +36,8 @@ class GPSFix(Record):
 
 
 class PipelineConfig(Record):
+    capture_mode: Literal["Single pass", "General"] = "General"
+    horizontal_fov_deg: float = Field(default=0, ge=0, le=150)
     depth_method: Literal["COLMAP stereo", "Depth Anything V2"] = "COLMAP stereo"
     weights_path: str = "models/depth-anything-v2-small"
     device: Literal["Auto", "CPU", "CUDA"] = "Auto"
@@ -113,10 +116,10 @@ class Project(Record):
     created: str = Field(default_factory=now)
     modified: str = Field(default_factory=now)
     video: Video | None = None
-    analysis: AnalysisConfig = Field(default_factory=lambda: AnalysisConfig(sampling_mode="Adaptive", min_features=40, max_clipped_fraction=0.35))
+    analysis: AnalysisConfig = Field(default_factory=lambda: AnalysisConfig(sampling_mode="Adaptive", min_features=40, max_clipped_fraction=0.35, cover_entire_video=True))
     telemetry: list[GPSFix] = Field(default_factory=list)
     telemetry_source: str = ""
-    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    pipeline: PipelineConfig = Field(default_factory=lambda: PipelineConfig(capture_mode="Single pass"))
     frames: list[Frame] = Field(default_factory=list)
     analysis_seconds: float = Field(default=0, ge=0)
     status: Literal["No video", "Ready for analysis", "Analysis running", "Ready for reconstruction", "Reconstruction running", "Scene ready", "Failed", "Cancelled"] = "No video"

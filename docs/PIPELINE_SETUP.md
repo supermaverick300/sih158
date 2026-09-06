@@ -1,5 +1,7 @@
 # Seven-stage reconstruction setup
 
+For one continuous flight, follow the [Single pass guide](SINGLE_PASS.md). New projects use that mode: stereo and accepted AI depths produce open visible surfaces. **General** retains the older Poisson mesh / AI voxel-cloud behavior described below. No extra download is required for Single pass.
+
 The app implements the seven stages in the requested diagram. GPS stages are optional because they require actual flight telemetry. AI depth is calibrated against COLMAP geometry and can reject incompatible footage instead of producing a misleading cloud.
 
 ## Downloads and installation
@@ -39,9 +41,9 @@ Set-Location D:\PROJECTS\sih158
 5. Without telemetry, use GPS spacing **0** and leave alignment unchecked. With matching telemetry, follow the next section before analyzing.
 6. Under **4–7 · Reconstruction pipeline**, choose **Depth Anything V2**, the local weights folder above, and **CPU**. Click **Check AI installation**. Start with pixel stride **4** and voxel size **0.05**; voxel size is in arbitrary SfM units without GPS, or meters after successful alignment. Increase it if fusion reaches the 500,000-voxel memory cap.
 7. Click **Save settings**. Depth method and fusion settings belong to the current project. General settings and extraction settings also become defaults for new projects.
-8. On **Video**, click **Analyze**. Hover a frame for quality score, feature count, clipped pixels, motion and GPS. Review rejected-frame reasons. The sample cap limits the number of candidate frames, and may stop analysis before the end of a long video.
-9. Click **Reconstruct footage** on Models, or **Generate scene** on Dashboard. The app runs SfM, optional GPS alignment, undistortion, AI inference, calibration, consistency filtering and colored point-cloud fusion.
-10. Open **Scene** and use **Frame all**, orbit and zoom. AI output is a point cloud, not a watertight or textured mesh. Choose **COLMAP stereo** and **Dense mesh (CUDA)** instead when you want the existing stereo/Poisson surface workflow.
+8. On **Video**, click **Analyze**. Hover a frame for quality score, feature count, clipped pixels, motion and GPS. Review rejected-frame reasons. Single pass distributes the candidate budget across the timeline; increase it for long videos to preserve overlap. General mode may stop before the end when its budget is exhausted.
+9. Click **Reconstruct footage** on Models, or **Generate scene** on Dashboard. The app runs SfM, optional GPS alignment, undistortion, AI inference, calibration and consistency filtering.
+10. Open **Scene** and use **Frame all**, orbit and zoom. Single pass creates an open visible surface; General produces an AI point cloud. Neither generates unseen geometry or a texture atlas. Choose **COLMAP stereo** and **Dense mesh (CUDA)** for stereo depths, with open surfaces in Single pass or Poisson meshing in General.
 
 ## Telemetry needed for stages 3 and 6
 
@@ -93,7 +95,9 @@ Use **Models → Reconstruction files**. Each reconstruction has its own run dir
 - `*.depth.npy`: calibrated depth maps for frames that passed checks.
 - `*.preview.jpg`: colored relative-depth previews for inspection.
 - `calibration.json`: model provenance and per-frame calibration/rejection details.
-- `ai-dense-*/ai-fused.ply`: final colored cloud, created only after successful fusion.
+- `ai-dense-*/ai-fused.ply`: General mode colored cloud, created only after successful fusion.
+- `ai-dense-*/ai-visible-surface.ply`: Single pass AI surface, only after successful calibration and consistency checks.
+- `dense-*/visible-surface.ply`: Single pass stereo surface, with a JSON construction report and separate inspection preview.
 
 The existing user drone project remains at `output/real-drone/project.drone3d.json`. Its COLMAP mesh is retained. AI inference produced 30 depth maps for this clip, but all disagreed with the existing SfM near/far ordering; **no AI cloud was accepted for this footage**. Better coverage and known camera calibration may be needed. A visually plausible AI depth preview does not prove a consistent 3D reconstruction.
 

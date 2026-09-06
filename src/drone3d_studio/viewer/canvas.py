@@ -41,7 +41,7 @@ class SceneCanvas(QWidget):
                 if raw_colors is not None and len(raw_colors) != len(vertices):
                     raw_colors = None
                 if len(faces):
-                    faces = faces[::max(1, math.ceil(len(faces) / 1800))]
+                    faces = faces[::max(1, math.ceil(len(faces) / 12000))]
                     used, inverse = np.unique(faces, return_inverse=True)
                     self.geometry[key] = (vertices[used], inverse.reshape((-1, 3)))
                     self.vertex_colors[key] = raw_colors[used] if raw_colors is not None else None

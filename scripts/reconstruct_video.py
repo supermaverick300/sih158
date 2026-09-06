@@ -27,12 +27,16 @@ def main():
     parser.add_argument("--gps-spacing", type=float, default=0)
     parser.add_argument("--telemetry-offset", type=float, default=0)
     parser.add_argument("--align-gps", action="store_true")
+    parser.add_argument("--general", action="store_true", help="Use the previous general/Poisson workflow")
+    parser.add_argument("--horizontal-fov", type=float, default=0, help="Known horizontal FOV of rectified video; 0 estimates intrinsics")
     args = parser.parse_args()
+    info = metadata(args.video)
     root = args.project.resolve()
     project = store.create(root, args.video.stem)
-    project.video = metadata(args.video)
+    project.video = info
     project.analysis = AnalysisConfig(interval=args.interval, max_frames=args.max_frames, blur_threshold=args.blur, sampling_mode="Adaptive" if args.adaptive else "Fixed", min_features=args.min_features, max_clipped_fraction=args.max_clipped, gps_spacing_m=args.gps_spacing, telemetry_offset_s=args.telemetry_offset)
-    project.pipeline = PipelineConfig(depth_method="Depth Anything V2" if args.ai else "COLMAP stereo", align_gps=args.align_gps)
+    project.pipeline = PipelineConfig(capture_mode="General" if args.general else "Single pass", horizontal_fov_deg=args.horizontal_fov, depth_method="Depth Anything V2" if args.ai else "COLMAP stereo", align_gps=args.align_gps)
+    project.analysis.cover_entire_video = not args.general
     if args.telemetry:
         from drone3d_studio.services.telemetry import load_csv
         project.telemetry = load_csv(args.telemetry)
@@ -54,6 +58,8 @@ def main():
         project.models = [m for m, geometry in result]
         project.status = "Scene ready"
         project.reconstruction_status = "Succeeded — " + ("Depth Anything V2 colored cloud" if args.ai else "COLMAP " + project.settings.reconstruction_output) + (" · GPS-aligned ENU meters" if args.align_gps else " · arbitrary SfM units")
+        if not args.general:
+            project.reconstruction_status = "Succeeded — single-pass " + ("sparse cloud" if args.sparse and not args.ai else "visible surface") + "; unseen surfaces not reconstructed" + (" · ENU meters" if args.align_gps else " · arbitrary SfM units")
         print([(m.name, m.vertices, m.faces) for m in project.models])
     except Exception as exc:
         project.status = "Cancelled" if cancel.is_set() else "Failed"

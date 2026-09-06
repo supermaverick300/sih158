@@ -1,5 +1,18 @@
 # Development validation
 
+## Single-pass workflow — September 7, 2026
+
+New projects and the video CLI default to Single pass. Added timeline-spanning sampling, local sequential matching without loop detection, forward-motion initialization, optional fixed pinhole FOV calibration, and depth-consistent open surface patches instead of Poisson closure. General mode retains compatibility. The viewer supports previews up to 12,000 faces.
+
+- `venv\Scripts\python -m pytest`: **47 passed in 16.04 seconds**.
+- `venv\Scripts\python main.py --smoke-test`: **exit 0**.
+- Tests cover depth binary decoding, discontinuities/holes, a controlled plane seen by three collinear translating cameras without rotation, cancellation, configuration compatibility, timeline coverage, and mocked single-pass COLMAP command orchestration. Synthetic and mocked tests are not real-world accuracy evidence.
+- Actual COLMAP reran feature extraction, sequential matching and sparse reconstruction on all **30 saved frames** of the original straight-pass village clip. All 30 registered, yielding **26,601 sparse points**. Output: `output/Single-Pass-Flight/reconstruction/cc3b42936720`. The original video's previously supplied path is now missing, so this was saved-frame processing, not a fresh decode of that video.
+- Separately, `scripts/rebuild_visible_surface.py` processed the earlier stereo depths and camera poses for those 30 frames. It produced **312,383 vertices / 552,528 faces**, with a **12,000-face** preview. Output: `output/real-drone/reconstruction/visible-59eadd056fad/visible-surface.ply`. The actual app reopened and rendered it. This reused old dense results; it was not a new end-to-end dense run with the new mapper settings.
+- Visual inspection still shows distortion/noise in the original clip's geometry. More faces do not prove accuracy. The open surface builder changes representation and preserves missing coverage; it does not fix unreliable camera estimates. No exact scene, complete unseen surfaces, metric accuracy or successful AI calibration for this clip is claimed.
+
+The original models and external files were preserved. See [single-pass usage](SINGLE_PASS.md). Full fresh-video dense validation, real calibrated single-pass accuracy measurements and the new AI surface path on real flight data remain unverified.
+
 ## Seven-stage integration — September 6, 2026
 
 Added adaptive sampling, feature/exposure scoring, timestamped GPS CSV import and spacing, local Depth Anything V2 Small inference, SfM inverse-depth calibration, verified GPS-to-ENU alignment and multi-view colored voxel fusion. The Settings UI persists these controls in project JSON; imported/exported telemetry references are rebased. Existing projects retain compatible defaults. Real reconstruction never falls back to demo geometry.
