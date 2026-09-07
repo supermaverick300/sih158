@@ -5,7 +5,7 @@ The display is capped per object for responsiveness; stored geometry remains int
 import math
 import numpy as np
 from PySide6.QtCore import Qt, QPointF, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QBrush, QImage, QTransform
 from PySide6.QtWidgets import QWidget
 
 from drone3d_studio.services.meshes import matrix
@@ -22,6 +22,7 @@ class SceneCanvas(QWidget):
         self.setToolTip("Left drag: orbit · right/middle drag: pan · wheel: zoom · click: select · arrows: move XY · PageUp/Down: move Z")
         self.models, self.geometry, self.hit = [], {}, []
         self.vertex_colors = {}
+        self.textures = {}
         self.selection = ""
         self.background = "#101923"
         self.target = np.zeros(3)
@@ -45,12 +46,30 @@ class SceneCanvas(QWidget):
                     used, inverse = np.unique(faces, return_inverse=True)
                     self.geometry[key] = (vertices[used], inverse.reshape((-1, 3)))
                     self.vertex_colors[key] = raw_colors[used] if raw_colors is not None else None
+                    uv = getattr(visual, 'uv', None)
+                    material = getattr(visual, 'material', None)
+                    texture = getattr(material, 'baseColorTexture', None)
+                    if texture is None:
+                        texture = getattr(material, 'image', None)
+                    if texture is not None and uv is not None and len(uv) == len(vertices):
+                        pixels = np.asarray(texture.convert('RGBA'), dtype=np.uint8).copy()
+                        height, width = pixels.shape[:2]
+                        bitmap = QImage(pixels.data, width, height, pixels.strides[0], QImage.Format.Format_RGBA8888).copy()
+                        coords = np.asarray(uv)[used].copy()
+                        coords[:, 0] *= width - 1
+                        coords[:, 1] = (1 - coords[:, 1]) * (height - 1)
+                        source = np.concatenate((coords[inverse.reshape(-1, 3)], np.ones((len(faces), 3, 1))), axis=2)
+                        valid = np.abs(np.linalg.det(source)) > 1e-8
+                        inverses = np.zeros_like(source)
+                        inverses[valid] = np.linalg.inv(source[valid])
+                        self.textures[key] = (QBrush(bitmap), inverses, valid)
                 else:
                     step = max(1, math.ceil(len(vertices) / 6000))
                     self.geometry[key] = (vertices[::step], np.empty((0, 3), dtype=int))
                     self.vertex_colors[key] = raw_colors[::step] if raw_colors is not None else None
         self.geometry = {k: v for k, v in self.geometry.items() if any(m.id == k for m in models)}
         self.vertex_colors = {k: v for k, v in self.vertex_colors.items() if k in self.geometry}
+        self.textures = {k: v for k, v in self.textures.items() if k in self.geometry}
         self.update()
 
     def transformed(self, model):
@@ -107,6 +126,7 @@ class SceneCanvas(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor(self.background))
         extent = max(5, self.distance / 2)
         def line(a, b, color):
@@ -131,7 +151,9 @@ class SceneCanvas(QWidget):
             color = QColor("#ffcb70" if model.id == self.selection else colors[index % len(colors)])
             rgb = self.vertex_colors.get(model.id)
             if len(faces):
-                for face in faces:
+                texture = self.textures.get(model.id)
+                mappings = texture[1] @ screen[faces] if texture else None
+                for face_index, face in enumerate(faces):
                     if np.any(depth[face] <= .05):
                         continue
                     polygon = QPolygonF([QPointF(*p) for p in screen[face]])
@@ -140,13 +162,20 @@ class SceneCanvas(QWidget):
                     normal = np.cross(vertices[face[1]] - vertices[face[0]], vertices[face[2]] - vertices[face[0]])
                     shade = 1.0 if model.origin == "MiDaS estimated relief" else .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
                     tint = QColor.fromRgbF(min(1, color.redF() * shade), min(1, color.greenF() * shade), min(1, color.blueF() * shade))
-                    triangles.append((float(depth[face].mean()), polygon, tint, model.id))
+                    mapping = mappings[face_index] if texture and texture[2][face_index] else None
+                    triangles.append((float(depth[face].mean()), polygon, tint, model.id, mapping))
             else:
-                points.extend((float(d), QPointF(*p), QColor(*map(int, rgb[i, :3])) if rgb is not None else color, model.id) for i, (p, d) in enumerate(zip(screen, depth)) if d > .05)
-        for depth, shape, color, key in sorted(triangles + points, key=lambda x: -x[0]):
+                points.extend((float(d), QPointF(*p), QColor(*map(int, rgb[i, :3])) if rgb is not None else color, model.id, None) for i, (p, d) in enumerate(zip(screen, depth)) if d > .05)
+        for depth, shape, color, key, mapping in sorted(triangles + points, key=lambda x: -x[0]):
             if isinstance(shape, QPolygonF):
-                painter.setPen(QPen(color, .6))
-                painter.setBrush(color)
+                if mapping is not None:
+                    brush = self.textures[key][0]
+                    brush.setTransform(QTransform(*mapping.ravel()))
+                    painter.setPen(QPen(brush, .6))
+                    painter.setBrush(brush)
+                else:
+                    painter.setPen(QPen(color, .6))
+                    painter.setBrush(color)
                 painter.drawPolygon(shape)
             else:
                 painter.setPen(QPen(color, 3))

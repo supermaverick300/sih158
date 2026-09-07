@@ -10,11 +10,11 @@ MiDaS ONNX and its CPU runtime are installed on this laptop. Restart the app, op
 2. Analyze the video. Select an accepted frame in the Video frame list. Without a selected accepted frame, the highest quality accepted frame is used.
 3. Click Generate scene. This method uses CPU and does not launch COLMAP. The sparse/dense dropdown, FOV and stereo/AI fusion stride do not affect this relief.
 4. The filled preview opens from the front. Orbit slightly to inspect estimated depth. On reopening a project, choose **Front** for the source-facing view. Large viewing changes expose stretching; unseen surfaces do not exist.
-5. Models → Reconstruction files contains the full `midas-relief.ply`, the complete coarser `midas-relief-preview.ply`, `source.jpg`, `depth-preview.jpg`, `relative-depth.npy`, and reports.
+5. Models → Reconstruction files contains the textured full `midas-relief.glb` and lightweight `midas-relief-preview.glb`, colored PLY alternatives, `source.jpg`, `depth-preview.jpg`, `relative-depth.npy`, and reports. GLB embeds the source image and opens in Blender or other compatible viewers.
 
 Previously generated COLMAP/AI scene objects are hidden after successful generation, while their files and records remain available. Selecting colored geometry now preserves its colors.
 
-The full mesh uses a grid of up to 256 pixels on its longer side. The preview stays below 12,000 faces and connects the whole grid instead of discarding triangles. This is vertex-colored geometry, not a high-resolution texture atlas. Normalized inverse depth is extruded into presentation coordinates; connecting depth boundaries can stretch foreground objects into backgrounds.
+The full mesh uses a grid of up to 256 pixels on its longer side. The app now uses a textured preview with at most 48 grid samples along its longer side, preserving image detail independently of face count. Both connect the whole grid instead of discarding triangles. GLBs embed the source image; PLY alternatives retain vertex colors. Normalized inverse depth is extruded into presentation coordinates; connecting depth boundaries can stretch foreground objects into backgrounds. Unchanged frame/model inputs reuse cached depth. See the [reference review and measured optimizations](REFERENCE_REVIEW.md).
 
 ## Installation on another machine
 

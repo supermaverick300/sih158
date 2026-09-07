@@ -3,6 +3,8 @@
 This is a single-frame depth visualization, not fused video photogrammetry.
 """
 import json
+import hashlib
+import time
 from pathlib import Path
 import cv2
 import numpy as np
@@ -62,7 +64,56 @@ def relief_mesh(rgb, relative, max_side=256):
     return trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors, process=False)
 
 
+def texture_relief(mesh, rgb):
+    """Preserve source detail independently of the geometry's sampling density."""
+    from PIL import Image
+    vertices = mesh.vertices
+    x, z = vertices[:, 0], vertices[:, 2]
+    uv = np.column_stack(((x - x.min()) / max(np.ptp(x), 1e-9),
+                          (z - z.min()) / max(np.ptp(z), 1e-9)))
+    result = mesh.copy()
+    result.visual = trimesh.visual.texture.TextureVisuals(uv=uv, image=Image.fromarray(rgb))
+    return result
+
+
+def cached_prediction(rgb, weights, cache, cancel):
+    """Content-addressed local cache; source/model changes invalidate predictions."""
+    if not Path(weights).is_file():
+        raise ValueError('MiDaS weights missing. Run scripts\\download_midas.py or set the MiDaS ONNX path in Settings.')
+    digest = hashlib.sha256(b'midas-rgb-embedded-normalization-v1')
+    digest.update(np.asarray(rgb.shape, dtype=np.int64).tobytes())
+    digest.update(rgb.tobytes())
+    with Path(weights).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            if cancel.is_set():
+                raise Cancelled('MiDaS cancelled')
+            digest.update(chunk)
+    key = digest.hexdigest()
+    target = cache / (key + '.npy')
+    if target.is_file():
+        try:
+            relative = np.load(target, allow_pickle=False)
+            if relative.shape == rgb.shape[:2] and np.isfinite(relative).all():
+                return relative, True, key
+        except (ValueError, OSError, EOFError):
+            pass
+    relative = MidasPredictor(weights).predict(rgb)
+    if cancel.is_set():
+        raise Cancelled('MiDaS cancelled')
+    cache.mkdir(parents=True, exist_ok=True)
+    from uuid import uuid4
+    temporary = cache / (key + '.' + uuid4().hex + '.tmp')
+    try:
+        with temporary.open('wb') as stream:
+            np.save(stream, relative, allow_pickle=False)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return relative, False, key
+
+
 def run_relief(root, frames, config, work, cancel, progress):
+    started = time.perf_counter()
     accepted = [f for f in frames if f.accepted]
     if not accepted:
         raise ValueError('Analyze footage and select an accepted frame first.')
@@ -81,7 +132,9 @@ def run_relief(root, frames, config, work, cancel, progress):
     if not weights.is_absolute():
         weights = Path(__file__).resolve().parents[3] / weights
     progress(10, f'MiDaS: estimating frame at {frame.time:.2f}s; single-frame non-metric relief')
-    relative = MidasPredictor(weights).predict(rgb)
+    relative, cache_hit, cache_key = cached_prediction(rgb, weights, root / 'cache' / 'midas', cancel)
+    depth_seconds = time.perf_counter() - started
+    progress(60, 'Reusing verified cached depth' if cache_hit else 'Depth estimated; building textured surfaces')
     if cancel.is_set():
         raise Cancelled('MiDaS cancelled')
     work.mkdir(parents=True, exist_ok=True)
@@ -91,17 +144,24 @@ def run_relief(root, frames, config, work, cancel, progress):
     write_image(work / 'depth-preview.jpg', cv2.applyColorMap(normalized, cv2.COLORMAP_INFERNO))
     full = relief_mesh(rgb, relative)
     full.export(work / 'midas-relief.ply')
+    texture_relief(full, rgb).export(work / 'midas-relief.glb')
     # A complete coarser grid avoids dropping random triangles in the CPU viewer.
     aspect = max(rgb.shape[:2]) / min(rgb.shape[:2])
     preview = relief_mesh(rgb, relative, max_side=min(256, int(np.sqrt(6000 * aspect))))
     preview.export(work / 'midas-relief-preview.ply')
+    textured_preview = texture_relief(relief_mesh(rgb, relative, max_side=48), rgb)
+    textured_preview.export(work / 'midas-relief-preview.glb')
     atomic_write(work / 'relief-report.json', json.dumps({
         'source_frame': str(path), 'time_seconds': frame.time, 'weights': str(weights),
         'type': 'Estimated single-frame 2.5D relief', 'units': 'Normalized presentation units',
         'projection': 'Orthographic image grid with normalized inverse-depth extrusion',
         'limitations': 'Not a fused video model; no metric scale, unseen surfaces or segmentation. Depth boundaries are stretched connections.',
-        'vertices': len(full.vertices), 'faces': len(full.faces)}, indent=2))
-    record, mesh = model_record(root, work / 'midas-relief-preview.ply', 'MiDaS estimated relief')
+        'vertices': len(full.vertices), 'faces': len(full.faces),
+        'texture': 'Embedded source RGB image; not generated imagery',
+        'cache_hit': cache_hit, 'cache_key': cache_key, 'depth_seconds': depth_seconds,
+        'total_seconds': time.perf_counter() - started,
+        'preview_faces': len(textured_preview.faces)}, indent=2))
+    record, mesh = model_record(root, work / 'midas-relief-preview.glb', 'MiDaS estimated relief')
     record.name = f'MiDaS 2.5D relief · frame {frame.time:.2f}s · estimated'
     progress(100, f'Filled MiDaS relief: {len(full.faces):,} full faces. Files: {work}')
     return [(record, mesh)]

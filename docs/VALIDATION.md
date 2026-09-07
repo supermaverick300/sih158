@@ -1,5 +1,9 @@
 # Development validation
 
+## Reference-driven texture and cache optimization — September 7, 2026
+
+Reviewed both user-supplied repositories at pinned commits. Independently added textured GLB output/preview, CPU texture rendering and content-addressed depth caching. Actual video-frame output was generated, reopened and visually inspected. **53 tests passed in 20.28 s**; startup smoke test exited **0**. On this scene, median render time improved from **1.014 s to 0.172 s**, and cache-hit backend generation took **0.451 s**. These are presentation/efficiency measurements, not geometry-accuracy results. See [methods, reference findings and limitations](REFERENCE_REVIEW.md).
+
 ## MiDaS ONNX relief — September 7, 2026
 
 Added a distinct estimated single-frame 2.5D relief mode, local MiDaS v2.1 Small ONNX inference on CPU, colored grid PLY export, a complete coarser preview, source/depth previews and provenance reports. Selected accepted frames are honored in the GUI; otherwise the best quality accepted frame is used. GPS alignment is explicitly rejected for this uncalibrated mode. Old reconstruction objects are hidden only after successful results; their records/files remain. Colored selections retain their image colors.
