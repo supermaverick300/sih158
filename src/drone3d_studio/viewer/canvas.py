@@ -65,6 +65,8 @@ class SceneCanvas(QWidget):
             high = np.max([v.max(axis=0) for v in arrays], axis=0)
             self.target = (low + high) / 2
             self.distance = max(float(np.linalg.norm(high - low)) * 1.7, 2)
+            if all(m.origin == "MiDaS estimated relief" for m in self.models if m.visible):
+                self.distance *= .65
         else:
             self.target, self.distance = np.zeros(3), 12.
         self.update()
@@ -127,7 +129,7 @@ class SceneCanvas(QWidget):
             vertices, faces = self.transformed(model)
             screen, depth = self.project(vertices)
             color = QColor("#ffcb70" if model.id == self.selection else colors[index % len(colors)])
-            rgb = self.vertex_colors.get(model.id) if model.id != self.selection else None
+            rgb = self.vertex_colors.get(model.id)
             if len(faces):
                 for face in faces:
                     if np.any(depth[face] <= .05):
@@ -136,14 +138,14 @@ class SceneCanvas(QWidget):
                     if rgb is not None:
                         color = QColor(*map(int, rgb[face, :3].mean(axis=0)))
                     normal = np.cross(vertices[face[1]] - vertices[face[0]], vertices[face[2]] - vertices[face[0]])
-                    shade = .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
+                    shade = 1.0 if model.origin == "MiDaS estimated relief" else .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
                     tint = QColor.fromRgbF(min(1, color.redF() * shade), min(1, color.greenF() * shade), min(1, color.blueF() * shade))
                     triangles.append((float(depth[face].mean()), polygon, tint, model.id))
             else:
                 points.extend((float(d), QPointF(*p), QColor(*map(int, rgb[i, :3])) if rgb is not None else color, model.id) for i, (p, d) in enumerate(zip(screen, depth)) if d > .05)
         for depth, shape, color, key in sorted(triangles + points, key=lambda x: -x[0]):
             if isinstance(shape, QPolygonF):
-                painter.setPen(QPen(color.darker(115), .4))
+                painter.setPen(QPen(color, .6))
                 painter.setBrush(color)
                 painter.drawPolygon(shape)
             else:

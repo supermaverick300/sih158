@@ -8,6 +8,8 @@ A locally runnable Windows desktop MVP for turning drone video into inspected fr
 
 ## Demo versus real reconstruction
 
+For a filled image-based preview without camera recovery, choose **MiDaS ONNX relief**. This explicitly generates an estimated 2.5D surface from one selected video frame, not fused video geometry. See [MiDaS installation and usage](docs/MIDAS_RELIEF.md). The COLMAP description below applies to the photogrammetry modes.
+
 **Demo mode creates procedural geometry. It does not recover the scene in your footage.** Import a video, run real frame analysis, then generate a clearly labelled drone, box and sphere to try editing, saving and reopening a scene.
 
 **The main reconstruction action always runs real COLMAP.** It runs feature extraction, sequential matching and sparse mapping. With **COLMAP stereo** and **Dense mesh (CUDA)** selected, it also runs image undistortion, PatchMatch stereo and depth fusion. Single pass builds an open `visible-surface.ply`; General uses Poisson meshing to produce `mesh.ply`. A simplified colored preview opens in the viewer; full outputs remain in the project reconstruction directory. **Sparse cloud (CPU)** stops after sparse mapping. Alternatively, **Depth Anything V2** generates calibrated, multi-view-filtered depth, yielding an open surface in Single pass or a colored point cloud in General. Optional GPS alignment requires synchronized flight telemetry. Texture atlases remain outside this MVP. Demo generation is an explicit, separate test action on the Models page and is never used as a fallback for failed reconstruction.

@@ -1,0 +1,2 @@
+onnxruntime==1.23.2
+huggingface-hub==0.36.2

@@ -109,6 +109,8 @@ class ColmapBackend:
             result = self._run(root, frames, cancel, tracking)
             report["status"] = "Succeeded"
             report["units"] = "Local ENU metres" if self.pipeline.align_gps else "Arbitrary SfM units"
+            if self.pipeline.depth_method == "MiDaS ONNX relief":
+                report["units"] = "Normalized presentation units; not metric"
             report["gps_alignment"] = "Succeeded" if self.pipeline.align_gps else "Skipped"
             report["outputs"] = [{"path": model.path, "origin": model.origin, "vertices": model.vertices, "faces": model.faces} for model, mesh in result]
             return result
@@ -121,6 +123,12 @@ class ColmapBackend:
                 atomic_write(self.work / "pipeline-report.json", json.dumps(report, indent=2))
 
     def _run(self, root, frames, cancel, progress):
+        if self.pipeline.depth_method == "MiDaS ONNX relief":
+            if self.pipeline.align_gps:
+                raise ValueError("MiDaS relief is not georeferenced. Disable GPS alignment for this mode.")
+            from drone3d_studio.reconstruction.midas import run_relief
+            self.work = root / "reconstruction" / ("midas-" + uuid4().hex[:12])
+            return run_relief(root, frames, self.pipeline, self.work, cancel, progress)
         executable = detect(self.executable)
         single_pass = self.pipeline.capture_mode == "Single pass"
         ai = self.pipeline.depth_method == "Depth Anything V2"

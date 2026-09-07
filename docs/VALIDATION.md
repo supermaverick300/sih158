@@ -1,5 +1,11 @@
 # Development validation
 
+## MiDaS ONNX relief — September 7, 2026
+
+Added a distinct estimated single-frame 2.5D relief mode, local MiDaS v2.1 Small ONNX inference on CPU, colored grid PLY export, a complete coarser preview, source/depth previews and provenance reports. Selected accepted frames are honored in the GUI; otherwise the best quality accepted frame is used. GPS alignment is explicitly rejected for this uncalibrated mode. Old reconstruction objects are hidden only after successful results; their records/files remain. Colored selections retain their image colors.
+
+Final verification: **50 tests passed in 17.00 seconds**, startup smoke test exited **0**, and `pip check` found no broken requirements. New tests cover filled grid geometry, relative near/far direction, invalid constant depth, COLMAP bypass, output units, cancellation, GPS rejection, UI settings and old-cloud visibility. The actual ONNX model ran on a frame from the user's WebM video and exported **68,340 full faces / 11,550 preview faces**. The actual Qt app reopened and rendered the output. See [MiDaS usage, provenance and limitations](MIDAS_RELIEF.md). No metric accuracy, segmentation, unseen geometry or full-flight fusion is claimed.
+
 ## Single-pass workflow — September 7, 2026
 
 New projects and the video CLI default to Single pass. Added timeline-spanning sampling, local sequential matching without loop detection, forward-motion initialization, optional fixed pinhole FOV calibration, and depth-consistent open surface patches instead of Poisson closure. General mode retains compatibility. The viewer supports previews up to 12,000 faces.

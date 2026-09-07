@@ -256,7 +256,7 @@ class Studio(QMainWindow):
         layout.addLayout(row(button("Rename model", self.rename_model), button("Remove from scene", self.remove_model), button("Open in scene", lambda: self.nav.setCurrentRow(4)), button("Reconstruction files", self.open_reconstruction_files)))
 
     def build_scene(self):
-        layout = self.page("Scene workspace", "Select an object to edit its transform. Gold highlights the selection. Demo objects are not reconstructed footage.")
+        layout = self.page("Scene workspace", "Select an object to edit its transform. Image colors remain visible when selected. Demo objects are not reconstructed footage.")
         self.views = QComboBox()
         self.views.addItems(["Perspective", "Front", "Back", "Left", "Right", "Top", "Bottom"])
         self.canvas = SceneCanvas()
@@ -370,16 +370,16 @@ class Studio(QMainWindow):
         form = QFormLayout(group)
         self.pipeline_widgets = {}
         config = PipelineConfig()
-        for key, label in (("capture_mode", "Capture workflow"), ("horizontal_fov_deg", "Known horizontal FOV (degrees; 0 estimates)"), ("depth_method", "Depth method"), ("weights_path", "Local AI weights folder"), ("device", "AI inference device"), ("align_gps", "Align SfM to GPS before depth fusion"), ("alignment_max_error_m", "GPS inlier threshold (m)"), ("fusion_voxel_size", "AI cloud voxel size (General workflow)"), ("depth_stride", "Depth surface pixel stride")):
+        for key, label in (("capture_mode", "Capture workflow"), ("horizontal_fov_deg", "Known horizontal FOV (degrees; 0 estimates)"), ("depth_method", "Depth method"), ("weights_path", "Local Depth Anything weights folder"), ("midas_weights_path", "MiDaS Small ONNX file"), ("device", "AI inference device"), ("align_gps", "Align SfM to GPS before depth fusion"), ("alignment_max_error_m", "GPS inlier threshold (m)"), ("fusion_voxel_size", "AI cloud voxel size (General workflow)"), ("depth_stride", "Depth surface pixel stride")):
             value = getattr(config, key)
             if key in ("depth_method", "device", "capture_mode"):
                 widget = QComboBox()
-                widget.addItems(["Single pass", "General"] if key == "capture_mode" else ["COLMAP stereo", "Depth Anything V2"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
+                widget.addItems(["Single pass", "General"] if key == "capture_mode" else ["COLMAP stereo", "Depth Anything V2", "MiDaS ONNX relief"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
             elif key == "horizontal_fov_deg":
                 widget = spin(0,0,150,2)
             elif key == "align_gps":
                 widget = QCheckBox()
-            elif key == "weights_path":
+            elif key in ("weights_path", "midas_weights_path"):
                 widget = QLineEdit(value)
             else:
                 widget = spin(value, 2 if key == "depth_stride" else .001, 32 if key == "depth_stride" else 100, 0 if key == "depth_stride" else 3)
@@ -389,6 +389,7 @@ class Studio(QMainWindow):
         form.addRow(button("Check AI installation", self.check_ai))
         help_text = QLabel("Single pass reconstructs visible depth surfaces from one continuous translating flight, leaving unknown areas open. COLMAP stereo requires CUDA; Depth Anything V2 uses calibrated estimated depth and overrides the output choice above. General retains the previous meshing/cloud workflow. Supply horizontal FOV only if known for this exact rectified video and crop; 0 lets COLMAP estimate it. Without telemetry leave GPS spacing at 0 and alignment unchecked. AI setup: scripts\\setup_ai_windows.cmd.")
         help_text.setWordWrap(True)
+        help_text.setText(help_text.text() + " MiDaS ONNX relief builds a filled 2.5D surface from the selected accepted frame (or the highest-quality frame). It runs on CPU without COLMAP, ignores FOV/stride, and requires GPS alignment off. This is estimated image depth, not fused video geometry. Setup: requirements-midas.txt and scripts/download_midas.py.")
         form.addRow(help_text)
         layout.addWidget(group)
         layout.addWidget(button("Save settings", self.save_settings, True))
@@ -855,11 +856,19 @@ class Studio(QMainWindow):
         else:
             backend = ColmapBackend(self.project.settings.executable, self.project.settings.reconstruction_output, self.project.pipeline.model_copy(deep=True))
             frames = [frame.model_copy(deep=True) for frame in self.project.frames]
+            if self.project.pipeline.depth_method == "MiDaS ONNX relief" and self.frames.currentRow() >= 0:
+                selected = frames[self.frames.currentRow()]
+                if selected.accepted:
+                    frames = [selected]
             function = lambda cancel, progress: backend.run(self.root, frames, cancel, progress)
         self.run_job(function, self.scene_done)
         self.changed()
 
     def scene_done(self, result):
+        if result and result[0][0].origin != "Demo":
+            for existing in self.project.models:
+                if existing.origin in ("COLMAP", "Depth Anything V2", "MiDaS estimated relief"):
+                    existing.visible = False
         for model, mesh in result:
             self.project.models.append(model)
             self.meshes[model.id] = mesh
@@ -871,11 +880,15 @@ class Studio(QMainWindow):
             self.project.reconstruction_status = "Succeeded — single-pass visible surface; unseen areas not reconstructed" if any(m.faces for m, mesh in result) else "Succeeded — single-pass sparse cloud; unseen areas not reconstructed"
         if result and result[0][0].origin != "Demo":
             self.project.reconstruction_status += " · GPS-aligned ENU meters" if self.project.pipeline.align_gps else " · arbitrary SfM units (no GPS)"
+        if any(m.origin == "MiDaS estimated relief" for m, mesh in result):
+            self.project.reconstruction_status = "Succeeded — MiDaS estimated 2.5D image relief; not fused video geometry or metric scale"
         self.log(self.project.reconstruction_status)
         self.changed()
         self.canvas.frame_all()
         if any(m.origin == "COLMAP" and m.faces for m, mesh in result):
             self.canvas.face_surface()
+        if any(m.origin == "MiDaS estimated relief" for m, mesh in result):
+            self.canvas.view("Front")
         self.nav.setCurrentRow(4)
 
     def import_model(self):
@@ -1070,6 +1083,16 @@ class Studio(QMainWindow):
 
     def check_ai(self):
         if not self.idle():
+            return
+        if self.pipeline_widgets["depth_method"].currentText() == "MiDaS ONNX relief":
+            from drone3d_studio.reconstruction.midas import MidasPredictor
+            weights = Path(self.pipeline_widgets["midas_weights_path"].text())
+            if not weights.is_absolute():
+                weights = Path(__file__).resolve().parents[2] / weights
+            def checking_midas(cancel, progress):
+                MidasPredictor(weights)
+                return f"MiDaS ONNX loaded on CPU: {weights}\nEstimated image relief; no metric scale."
+            self.run_job(checking_midas, lambda message: QMessageBox.information(self, "AI installation", message))
             return
         from drone3d_studio.reconstruction.ai_depth import check_installation
         weights = Path(self.pipeline_widgets["weights_path"].text())

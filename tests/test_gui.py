@@ -183,3 +183,26 @@ def test_pipeline_controls_persist_and_reach_backend(qtbot, tmp_path, monkeypatc
     assert seen[0] == saved.pipeline and seen[0] is not project.pipeline
     assert errors == ["Missing telemetry"]
     window.close()
+
+
+def test_midas_result_hides_old_cloud_and_keeps_estimated_label(qtbot, tmp_path):
+    import trimesh
+    from drone3d_studio.domain.models import Model
+    window = Studio()
+    qtbot.addWidget(window)
+    root = tmp_path / 'relief'
+    project = store.create(root, 'Relief')
+    window.activate(root, project)
+    window.pipeline_widgets['depth_method'].setCurrentText('MiDaS ONNX relief')
+    window.save_settings()
+    assert project.pipeline.depth_method == 'MiDaS ONNX relief'
+    old = Model(name='Old cloud', path='old.ply', format='PLY', vertices=3, faces=0, origin='COLMAP')
+    project.models.append(old)
+    mesh = trimesh.Trimesh(vertices=[[0,0,0],[1,0,0],[0,0,1]], faces=[[0,1,2]], process=False)
+    record = Model(name='Relief', path='relief.ply', format='PLY', vertices=3, faces=1, origin='MiDaS estimated relief')
+    window.scene_done([(record, mesh)])
+    assert not old.visible and record.visible
+    assert 'not fused video geometry' in project.reconstruction_status
+    assert 'SfM units' not in project.reconstruction_status
+    assert window.canvas.yaw == -90
+    window.close()

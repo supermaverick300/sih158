@@ -22,7 +22,9 @@ def main():
     parser.add_argument("--adaptive", action="store_true")
     parser.add_argument("--min-features", type=int, default=40)
     parser.add_argument("--max-clipped", type=float, default=.35)
-    parser.add_argument("--ai", action="store_true", help="Depth Anything V2 colored cloud; local weights required")
+    methods = parser.add_mutually_exclusive_group()
+    methods.add_argument("--ai", action="store_true", help="Depth Anything V2 calibrated depth; local weights required")
+    methods.add_argument("--midas", action="store_true", help="Estimated single-frame colored relief; not fused video geometry")
     parser.add_argument("--telemetry", type=Path)
     parser.add_argument("--gps-spacing", type=float, default=0)
     parser.add_argument("--telemetry-offset", type=float, default=0)
@@ -37,6 +39,8 @@ def main():
     project.analysis = AnalysisConfig(interval=args.interval, max_frames=args.max_frames, blur_threshold=args.blur, sampling_mode="Adaptive" if args.adaptive else "Fixed", min_features=args.min_features, max_clipped_fraction=args.max_clipped, gps_spacing_m=args.gps_spacing, telemetry_offset_s=args.telemetry_offset)
     project.pipeline = PipelineConfig(capture_mode="General" if args.general else "Single pass", horizontal_fov_deg=args.horizontal_fov, depth_method="Depth Anything V2" if args.ai else "COLMAP stereo", align_gps=args.align_gps)
     project.analysis.cover_entire_video = not args.general
+    if args.midas:
+        project.pipeline.depth_method = "MiDaS ONNX relief"
     if args.telemetry:
         from drone3d_studio.services.telemetry import load_csv
         project.telemetry = load_csv(args.telemetry)
@@ -61,6 +65,8 @@ def main():
         if not args.general:
             project.reconstruction_status = "Succeeded — single-pass " + ("sparse cloud" if args.sparse and not args.ai else "visible surface") + "; unseen surfaces not reconstructed" + (" · ENU meters" if args.align_gps else " · arbitrary SfM units")
         print([(m.name, m.vertices, m.faces) for m in project.models])
+        if args.midas:
+            project.reconstruction_status = "Succeeded — MiDaS estimated 2.5D relief; normalized presentation units; not fused video geometry"
     except Exception as exc:
         project.status = "Cancelled" if cancel.is_set() else "Failed"
         project.reconstruction_status = str(exc)

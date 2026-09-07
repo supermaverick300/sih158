@@ -11,3 +11,4 @@ output/
 .coverage
 user-projects/
 models/depth-anything-v2-small/
+models/midas-small-onnx/
