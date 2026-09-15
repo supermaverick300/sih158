@@ -1,5 +1,17 @@
 # Development validation
 
+## OpenMVS textured reconstruction — September 15, 2026
+
+Installed portable OpenMVS 2.4.0 CPU and Blender 4.5.3 LTS. The actual InterfaceCOLMAP → DensifyPointCloud → ReconstructMesh → RefineMesh → TextureMesh → Blender pipeline completed using the existing 65-camera COLMAP workspace from `videoplaybackreal.webm`. This reused camera recovery; it was not a fresh video-to-SfM validation or a validation of arbitrary straight-pass footage.
+
+The downstream run took about 14.1 minutes, producing 1,050,454 dense points and an 89,095-face refined mesh. Exports contain 89,095 / 44,547 / 9,999 faces (high / medium / low), with an embedded 2048 × 2048 atlas. Output project: `output/OpenMVS-Monument-Final/project.drone3d.json`.
+
+Visual inspection caught black atlas patches despite successful process exits. Re-running only TextureMesh with global and local seam leveling disabled removed those artifacts; Blender then regenerated all three GLBs from `scene_clean.obj`. The production command now disables both options. The original stage report describes the initial run; `texture-correction.json` records the subsequent correction. Original OBJ/atlas files were retained. Exposure seams are an accepted tradeoff; the native defect's root cause was not established.
+
+The actual Qt viewer reopened the corrected low LOD with one texture and rendered recognizable terrain and the monument. Boundary distortion and patch differences remain. Face counts and process success do not establish geometric accuracy, unseen coverage or metric scale; this output uses arbitrary SfM units. Screenshots are in ignored `output/openmvs-model.png` and `output/openmvs-scene.png`.
+
+Final automated validation: **60 tests passed in 23.28 seconds**; startup smoke test exited **0**. Tests cover missing tools, stage order, retained outputs on failure, missing outputs despite exit zero, settings persistence and COLMAP routing with and without its optional dense pass. See [installation and usage](OPENMVS_PIPELINE.md).
+
 ## Reference-driven texture and cache optimization — September 7, 2026
 
 Reviewed both user-supplied repositories at pinned commits. Independently added textured GLB output/preview, CPU texture rendering and content-addressed depth caching. Actual video-frame output was generated, reopened and visually inspected. **53 tests passed in 20.28 s**; startup smoke test exited **0**. On this scene, median render time improved from **1.014 s to 0.172 s**, and cache-hit backend generation took **0.451 s**. These are presentation/efficiency measurements, not geometry-accuracy results. See [methods, reference findings and limitations](REFERENCE_REVIEW.md).

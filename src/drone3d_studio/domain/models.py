@@ -38,7 +38,10 @@ class GPSFix(Record):
 class PipelineConfig(Record):
     capture_mode: Literal["Single pass", "General"] = "General"
     horizontal_fov_deg: float = Field(default=0, ge=0, le=150)
-    depth_method: Literal["COLMAP stereo", "Depth Anything V2", "MiDaS ONNX relief"] = "COLMAP stereo"
+    depth_method: Literal["COLMAP stereo", "Depth Anything V2", "MiDaS ONNX relief", "OpenMVS textured mesh"] = "COLMAP stereo"
+    openmvs_directory: str = ""
+    blender_executable: str = ""
+    colmap_stereo_first: bool = False
     midas_weights_path: str = "models/midas-small-onnx/midas_v21_small_256.onnx"
     weights_path: str = "models/depth-anything-v2-small"
     device: Literal["Auto", "CPU", "CUDA"] = "Auto"
@@ -105,7 +108,7 @@ class Model(Record):
     faces: int = Field(ge=0)
     visible: bool = True
     status: str = "Ready"
-    origin: Literal["Imported", "Demo", "COLMAP", "Depth Anything V2", "MiDaS estimated relief"] = "Imported"
+    origin: Literal["Imported", "Demo", "COLMAP", "Depth Anything V2", "MiDaS estimated relief", "OpenMVS"] = "Imported"
     transform: Transform = Field(default_factory=Transform)
 
 

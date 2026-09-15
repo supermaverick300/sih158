@@ -206,3 +206,20 @@ def test_midas_result_hides_old_cloud_and_keeps_estimated_label(qtbot, tmp_path)
     assert 'SfM units' not in project.reconstruction_status
     assert window.canvas.yaw == -90
     window.close()
+
+
+def test_openmvs_settings_round_trip(qtbot, tmp_path):
+    window = Studio(); qtbot.addWidget(window)
+    root = tmp_path / 'mvs-settings'
+    project = store.create(root, 'MVS settings'); window.activate(root, project)
+    window.pipeline_widgets['depth_method'].setCurrentText('OpenMVS textured mesh')
+    window.pipeline_widgets['openmvs_directory'].setText('D:/tools/OpenMVS')
+    window.pipeline_widgets['blender_executable'].setText('D:/tools/Blender/blender.exe')
+    window.pipeline_widgets['colmap_stereo_first'].setChecked(True)
+    window.save_settings(); window.manual_save()
+    saved = store.load(root)
+    assert saved.pipeline.depth_method == 'OpenMVS textured mesh'
+    assert saved.pipeline.openmvs_directory == 'D:/tools/OpenMVS'
+    assert saved.pipeline.blender_executable == 'D:/tools/Blender/blender.exe'
+    assert saved.pipeline.colmap_stereo_first
+    window.close()

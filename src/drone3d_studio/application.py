@@ -336,7 +336,7 @@ class Studio(QMainWindow):
         extraction_help.setWordWrap(True)
         layout.addWidget(extraction_help)
         layout.addLayout(row(button("Choose COLMAP executable…", self.choose_executable), button("Check COLMAP installation", self.check_colmap)))
-        info = QLabel("Reconstruct footage uses real COLMAP photogrammetry. Dense mesh requires a CUDA GPU and produces a PLY surface. Sparse cloud runs on CPU. Dense processing is capped at 1000-pixel images with 1 GB caches. Procedural demos are separate test actions in Models. Download: https://github.com/colmap/colmap/releases")
+        info = QLabel("Choose a depth method below. COLMAP stereo produces sparse clouds or CUDA dense surfaces. OpenMVS adds refined meshes, texture atlases and Blender GLB exports. MiDaS is an estimated image relief. Procedural demos remain separate test actions in Models.")
         info.setWordWrap(True)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(info)
@@ -374,7 +374,7 @@ class Studio(QMainWindow):
             value = getattr(config, key)
             if key in ("depth_method", "device", "capture_mode"):
                 widget = QComboBox()
-                widget.addItems(["Single pass", "General"] if key == "capture_mode" else ["COLMAP stereo", "Depth Anything V2", "MiDaS ONNX relief"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
+                widget.addItems(["Single pass", "General"] if key == "capture_mode" else ["COLMAP stereo", "Depth Anything V2", "MiDaS ONNX relief", "OpenMVS textured mesh"] if key == "depth_method" else ["Auto", "CPU", "CUDA"])
             elif key == "horizontal_fov_deg":
                 widget = spin(0,0,150,2)
             elif key == "align_gps":
@@ -386,6 +386,16 @@ class Studio(QMainWindow):
             self.pipeline_widgets[key] = widget
             form.addRow(label, widget)
         form.addRow(button("Choose AI weights folder…", self.choose_weights))
+        for key, label in (("openmvs_directory", "OpenMVS executable folder"), ("blender_executable", "Blender executable")):
+            widget = QLineEdit(getattr(config, key))
+            self.pipeline_widgets[key] = widget
+            form.addRow(label, widget)
+        self.pipeline_widgets['colmap_stereo_first'] = QCheckBox('Run COLMAP dense stereo before OpenMVS (extra work; CUDA required)')
+        form.addRow(self.pipeline_widgets['colmap_stereo_first'])
+        mvs_help = QLabel('OpenMVS textured mesh runs camera recovery, undistortion, dense reconstruction, meshing, refinement, atlas texturing and Blender GLB export. It overrides the sparse/dense output choice. The low LOD opens in Scene; all three GLBs and the atlas remain under Reconstruction files. Leave the extra COLMAP stereo pass off to avoid duplicate dense estimation.')
+        mvs_help.setWordWrap(True)
+        form.addRow(mvs_help)
+        form.addRow(button("Check OpenMVS and Blender paths", self.check_textured_tools))
         form.addRow(button("Check AI installation", self.check_ai))
         help_text = QLabel("Single pass reconstructs visible depth surfaces from one continuous translating flight, leaving unknown areas open. COLMAP stereo requires CUDA; Depth Anything V2 uses calibrated estimated depth and overrides the output choice above. General retains the previous meshing/cloud workflow. Supply horizontal FOV only if known for this exact rectified video and crop; 0 lets COLMAP estimate it. Without telemetry leave GPS spacing at 0 and alignment unchecked. AI setup: scripts\\setup_ai_windows.cmd.")
         help_text.setWordWrap(True)
@@ -867,7 +877,7 @@ class Studio(QMainWindow):
     def scene_done(self, result):
         if result and result[0][0].origin != "Demo":
             for existing in self.project.models:
-                if existing.origin in ("COLMAP", "Depth Anything V2", "MiDaS estimated relief"):
+                if existing.origin in ("COLMAP", "Depth Anything V2", "MiDaS estimated relief", "OpenMVS"):
                     existing.visible = False
         for model, mesh in result:
             self.project.models.append(model)
@@ -882,10 +892,12 @@ class Studio(QMainWindow):
             self.project.reconstruction_status += " · GPS-aligned ENU meters" if self.project.pipeline.align_gps else " · arbitrary SfM units (no GPS)"
         if any(m.origin == "MiDaS estimated relief" for m, mesh in result):
             self.project.reconstruction_status = "Succeeded — MiDaS estimated 2.5D image relief; not fused video geometry or metric scale"
+        if any(m.origin == "OpenMVS" for m, mesh in result):
+            self.project.reconstruction_status = "Succeeded — OpenMVS textured mesh and high/medium/low GLBs" + (" · ENU metres" if self.project.pipeline.align_gps else " · arbitrary SfM units")
         self.log(self.project.reconstruction_status)
         self.changed()
         self.canvas.frame_all()
-        if any(m.origin == "COLMAP" and m.faces for m, mesh in result):
+        if any(m.origin in ("COLMAP", "OpenMVS") and m.faces for m, mesh in result):
             self.canvas.face_surface()
         if any(m.origin == "MiDaS estimated relief" for m, mesh in result):
             self.canvas.view("Front")
@@ -1103,6 +1115,15 @@ class Studio(QMainWindow):
             import torch
             return f"Local weights found: {weights}\nPyTorch {torch.__version__}\nCUDA available: {torch.cuda.is_available()}\nCPU inference works with the optional AI setup."
         self.run_job(checking, lambda message: QMessageBox.information(self, "AI installation", message))
+
+    def check_textured_tools(self):
+        from drone3d_studio.reconstruction.openmvs import installation
+        config = PipelineConfig(openmvs_directory=self.pipeline_widgets['openmvs_directory'].text(), blender_executable=self.pipeline_widgets['blender_executable'].text())
+        try:
+            paths = installation(config)
+            QMessageBox.information(self, 'Textured pipeline tools', '\n'.join(f'{key}: {value}' for key, value in paths.items()) + '\nPaths found. Runtime compatibility is checked when each stage runs.')
+        except ValueError as exc:
+            self.error(str(exc))
 
     def refresh_telemetry(self):
         fixes = self.project.telemetry if self.project else []

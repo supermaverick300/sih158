@@ -8,6 +8,8 @@ A locally runnable Windows desktop MVP for turning drone video into inspected fr
 
 ## Demo versus real reconstruction
 
+**Textured photogrammetry:** choose **OpenMVS textured mesh** for COLMAP camera recovery → OpenMVS densification/meshing/refinement/atlas texturing → Blender high/medium/low GLBs. The low LOD opens in the viewer. See [installation and pipeline instructions](docs/OPENMVS_PIPELINE.md).
+
 For a filled image-based preview without camera recovery, choose **MiDaS ONNX relief**. This explicitly generates an estimated 2.5D surface from one selected video frame, not fused video geometry. See [MiDaS installation and usage](docs/MIDAS_RELIEF.md). The COLMAP description below applies to the photogrammetry modes.
 
 **Demo mode creates procedural geometry. It does not recover the scene in your footage.** Import a video, run real frame analysis, then generate a clearly labelled drone, box and sphere to try editing, saving and reopening a scene.

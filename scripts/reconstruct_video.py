@@ -25,6 +25,10 @@ def main():
     methods = parser.add_mutually_exclusive_group()
     methods.add_argument("--ai", action="store_true", help="Depth Anything V2 calibrated depth; local weights required")
     methods.add_argument("--midas", action="store_true", help="Estimated single-frame colored relief; not fused video geometry")
+    methods.add_argument("--openmvs", action="store_true", help="OpenMVS textured mesh and Blender GLB LODs")
+    parser.add_argument("--openmvs-dir", default="")
+    parser.add_argument("--blender", default="")
+    parser.add_argument("--colmap-stereo-first", action="store_true")
     parser.add_argument("--telemetry", type=Path)
     parser.add_argument("--gps-spacing", type=float, default=0)
     parser.add_argument("--telemetry-offset", type=float, default=0)
@@ -41,6 +45,11 @@ def main():
     project.analysis.cover_entire_video = not args.general
     if args.midas:
         project.pipeline.depth_method = "MiDaS ONNX relief"
+    if args.openmvs:
+        project.pipeline.depth_method = "OpenMVS textured mesh"
+        project.pipeline.openmvs_directory = args.openmvs_dir
+        project.pipeline.blender_executable = args.blender
+        project.pipeline.colmap_stereo_first = args.colmap_stereo_first
     if args.telemetry:
         from drone3d_studio.services.telemetry import load_csv
         project.telemetry = load_csv(args.telemetry)
@@ -67,6 +76,8 @@ def main():
         print([(m.name, m.vertices, m.faces) for m in project.models])
         if args.midas:
             project.reconstruction_status = "Succeeded — MiDaS estimated 2.5D relief; normalized presentation units; not fused video geometry"
+        if args.openmvs:
+            project.reconstruction_status = "Succeeded — OpenMVS textured mesh and Blender GLB LODs" + (" · ENU metres" if args.align_gps else " · arbitrary SfM units")
     except Exception as exc:
         project.status = "Cancelled" if cancel.is_set() else "Failed"
         project.reconstruction_status = str(exc)

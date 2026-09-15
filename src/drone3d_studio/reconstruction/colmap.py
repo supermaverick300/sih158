@@ -43,6 +43,7 @@ def detect(configured=""):
 
 
 def run_command(args, cancel, log, cwd):
+    program = Path(args[0]).stem
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     env = os.environ.copy()
     binary = Path(args[0]).resolve().parent
@@ -71,7 +72,7 @@ def run_command(args, cancel, log, cwd):
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                raise Cancelled("COLMAP cancelled")
+                raise Cancelled(f"{program} cancelled")
             try:
                 line = lines.get(timeout=.1)
             except queue.Empty:
@@ -83,7 +84,7 @@ def run_command(args, cancel, log, cwd):
         code = process.wait()
         log(f"Exit code: {code}")
         if code != 0:
-            raise RuntimeError(f"COLMAP {args[1] if len(args) > 1 else ''} exited with code {code}. See project logs for details.\n" + "\n".join(recent))
+            raise RuntimeError(f"{program} {args[1] if len(args) > 1 else ''} exited with code {code}. See project logs for details.\n" + "\n".join(recent))
     finally:
         if process.poll() is None:
             process.kill()
@@ -130,6 +131,10 @@ class ColmapBackend:
             self.work = root / "reconstruction" / ("midas-" + uuid4().hex[:12])
             return run_relief(root, frames, self.pipeline, self.work, cancel, progress)
         executable = detect(self.executable)
+        mvs = self.pipeline.depth_method == "OpenMVS textured mesh"
+        if mvs:
+            from drone3d_studio.reconstruction.openmvs import installation
+            installation(self.pipeline)
         single_pass = self.pipeline.capture_mode == "Single pass"
         ai = self.pipeline.depth_method == "Depth Anything V2"
         weights = Path(self.pipeline.weights_path)
@@ -207,6 +212,18 @@ class ColmapBackend:
                 record, mesh = model_record(root, ply, "COLMAP")
                 record.name = f"COLMAP sparse cloud {index + 1}"
                 result.append((record, mesh))
+                if mvs:
+                    from drone3d_studio.reconstruction.openmvs import run_pipeline
+                    dense = work / f"mvs-input-{index}"
+                    dense.mkdir()
+                    run_command([executable, "image_undistorter", "--image_path", str(images), "--input_path", str(output), "--output_path", str(dense), "--output_type", "COLMAP", "--max_image_size", "1600"], cancel, log, work)
+                    if self.pipeline.colmap_stereo_first:
+                        run_command([executable, "patch_match_stereo", "--workspace_path", str(dense), "--workspace_format", "COLMAP", "--PatchMatchStereo.max_image_size", "1600", "--PatchMatchStereo.cache_size", "1", "--PatchMatchStereo.num_threads", "4", "--PatchMatchStereo.geom_consistency", "1"], cancel, log, work)
+                        run_command([executable, "stereo_fusion", "--workspace_path", str(dense), "--workspace_format", "COLMAP", "--input_type", "geometric", "--output_path", str(dense / "fused.ply"), "--StereoFusion.cache_size", "1", "--StereoFusion.num_threads", "4"], cancel, log, work)
+                    surface_result = run_pipeline(root, dense, work / f"openmvs-{index}", self.pipeline, cancel, log, run_command)
+                    record.visible = False
+                    result.append(surface_result)
+                    continue
                 if ai:
                     from drone3d_studio.reconstruction.ai_depth import run_depth_pipeline
                     dense = work / f"ai-dense-{index}"
