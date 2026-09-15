@@ -262,6 +262,14 @@ class Studio(QMainWindow):
         self.canvas = SceneCanvas()
         self.views.currentTextChanged.connect(self.canvas.view)
         layout.addLayout(row(self.views, button("Frame all", self.canvas.frame_all), button("Face surface", self.canvas.face_surface), button("Reset camera", self.reset_camera)))
+        self.surface_colours = QComboBox()
+        self.surface_colours.addItems(['Texture', 'Relative height'])
+        self.surface_colours.currentTextChanged.connect(self.canvas.set_colour_mode)
+        self.surface_detail = QComboBox()
+        self.surface_detail.addItems(['Low', 'Medium', 'High'])
+        self.surface_detail.setToolTip('Load the selected OpenMVS object’s exported LOD. High detail can slow the CPU viewer.')
+        layout.addLayout(row(QLabel('Colours'), self.surface_colours, QLabel('Detail'), self.surface_detail,
+                             button('Load detail', self.load_surface_detail)))
         split = QSplitter()
         split.addWidget(self.canvas)
         panel = QWidget()
@@ -305,6 +313,30 @@ class Studio(QMainWindow):
         self.json_view.setReadOnly(True)
         self.json_view.setStyleSheet("font-family:Consolas;font-size:12px")
         layout.addWidget(self.json_view)
+
+    def load_surface_detail(self):
+        if not self.project or self.job is not None:
+            return
+        model = self.selected_model()
+        if model is None:
+            candidates = [m for m in self.project.models if m.visible and m.origin == 'OpenMVS']
+            model = candidates[0] if len(candidates) == 1 else None
+        if model is None or model.origin != 'OpenMVS':
+            self.error('Select an OpenMVS model in Scene objects first.')
+            return
+        level = self.surface_detail.currentText().lower()
+        path = store.resolve(self.root, model.path).parent / f'scene_{level}.glb'
+        if not path.is_file():
+            self.error(f'This reconstruction has no {level} export: {path}')
+            return
+        def loaded(mesh):
+            self.meshes[model.id] = mesh
+            # Display-only choice: keep the saved low-LOD reference and transforms.
+            self.canvas.face_limit = max(12000, len(mesh.faces))
+            self.canvas.invalidate_geometry()
+            self.refresh()
+            self.log(f'Displaying {level} detail: {len(mesh.faces):,} faces. Saved project retains its original model reference.')
+        self.run_job(lambda cancel, progress: meshes.load_mesh(path), loaded)
 
     def build_settings(self):
         layout = self.page("Settings", "Settings are saved with the project and used as defaults for new projects.")

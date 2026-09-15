@@ -1,5 +1,9 @@
 # Development validation
 
+## Height colouring and viewer LOD controls — September 16, 2026
+
+Added texture/relative-Z colouring and explicit loading of existing OpenMVS low/medium/high GLBs. Higher LODs display all their faces rather than the old 12,000-face sampling cap. File references and transforms are preserved. Tests exercise finite colours for flat surfaces, blue/red endpoints, actual high-LOD loading above the cap, return to low detail and unchanged persisted source reference. **61 tests passed in 24.65 seconds**, startup smoke test exited **0**. The actual monument project was reopened and its relative-height screenshot inspected. These are display improvements, not geometric or geographic accuracy validation.
+
 ## OpenMVS textured reconstruction — September 15, 2026
 
 Installed portable OpenMVS 2.4.0 CPU and Blender 4.5.3 LTS. The actual InterfaceCOLMAP → DensifyPointCloud → ReconstructMesh → RefineMesh → TextureMesh → Blender pipeline completed using the existing 65-camera COLMAP workspace from `videoplaybackreal.webm`. This reused camera recovery; it was not a fresh video-to-SfM validation or a validation of arbitrary straight-pass footage.

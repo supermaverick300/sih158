@@ -40,6 +40,10 @@ The OpenMVS mode overrides the older Sparse cloud / Dense mesh selection. Tools 
 
 ## Output details
 
+In Scene, choose **Colours → Texture / Relative height**. Relative height maps the displayed scene's transformed Z range from blue (low) to red (high); it is not verified geographic elevation or metres. A flat surface gets a constant colour. Object rotations affect this display coordinate.
+
+Select an OpenMVS object, choose **Detail → Low / Medium / High**, then **Load detail**. This loads its sibling GLB and displays every face of that LOD. High detail can be slow in the CPU viewer. With one visible OpenMVS object, selection is automatic. This is a temporary viewing choice: saved model paths/counts remain those of the original model, and reopening restores the saved asset. Neither control improves reconstruction accuracy or modifies exported geometry.
+
 Global and local seam leveling are disabled: this Windows build produced black atlas patches on the validation mesh when they were enabled. This preserves source image colors but can leave exposure differences between patches. The corrected exports were visually inspected in the app.
 
 Each reconstruction component gets its own `openmvs-N/` directory. It contains `.mvs` intermediate scenes, dense points, reconstructed/refined meshes, `scene_textured.obj`, `scene_textured.mtl` and atlas images. Atlas dimensions are capped at 4096; OpenMVS can generate multiple atlases.

@@ -7,6 +7,41 @@ from drone3d_studio.persistence.autosave import Autosave
 from drone3d_studio.services import meshes, video
 
 
+def test_height_colours_and_actual_lod_loading(qtbot, tmp_path):
+    import numpy as np
+    import trimesh
+    from drone3d_studio.viewer.canvas import SceneCanvas
+    colours = SceneCanvas.height_colors(np.array([0., 5., 10.]), 0., 10.)
+    assert colours[0, 2] > colours[0, 0]
+    assert colours[-1, 0] > colours[-1, 2]
+    assert np.isfinite(SceneCanvas.height_colors(np.zeros(3), 0., 0.)).all()
+    window = Studio()
+    qtbot.addWidget(window)
+    root = tmp_path / 'lods'
+    project = store.create(root, 'LOD test')
+    low = trimesh.creation.icosphere(subdivisions=1)
+    high = trimesh.creation.icosphere(subdivisions=5)
+    low.export(root / 'scene_low.glb')
+    high.export(root / 'scene_high.glb')
+    model, _ = meshes.model_record(root, root / 'scene_low.glb', 'OpenMVS')
+    project.models.append(model)
+    window.activate(root, project)
+    qtbot.waitUntil(lambda: window.job is None, timeout=10000)
+    window.surface_detail.setCurrentText('High')
+    window.load_surface_detail()
+    qtbot.waitUntil(lambda: window.job is None, timeout=10000)
+    assert len(window.canvas.geometry[model.id][1]) == len(high.faces)
+    assert model.path.endswith('scene_low.glb')
+    window.surface_colours.setCurrentText('Relative height')
+    assert window.canvas.colour_mode == 'Relative height'
+    window.canvas.grab()  # Exercise elevation rendering on a complete mesh.
+    window.surface_detail.setCurrentText('Low')
+    window.load_surface_detail()
+    qtbot.waitUntil(lambda: window.job is None, timeout=10000)
+    assert len(window.canvas.geometry[model.id][1]) == len(low.faces)
+    window.close()
+
+
 def test_autosave_debounce_and_failure(qtbot):
     calls, states = [], []
     saver = Autosave(lambda: calls.append(1))

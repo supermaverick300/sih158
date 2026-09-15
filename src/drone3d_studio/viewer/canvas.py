@@ -23,6 +23,9 @@ class SceneCanvas(QWidget):
         self.models, self.geometry, self.hit = [], {}, []
         self.vertex_colors = {}
         self.textures = {}
+        self.colour_mode = 'Texture'
+        self.face_limit = 12000
+
         self.selection = ""
         self.background = "#101923"
         self.target = np.zeros(3)
@@ -42,7 +45,7 @@ class SceneCanvas(QWidget):
                 if raw_colors is not None and len(raw_colors) != len(vertices):
                     raw_colors = None
                 if len(faces):
-                    faces = faces[::max(1, math.ceil(len(faces) / 12000))]
+                    faces = faces[::max(1, math.ceil(len(faces) / self.face_limit))]
                     used, inverse = np.unique(faces, return_inverse=True)
                     self.geometry[key] = (vertices[used], inverse.reshape((-1, 3)))
                     self.vertex_colors[key] = raw_colors[used] if raw_colors is not None else None
@@ -76,6 +79,21 @@ class SceneCanvas(QWidget):
         vertices, faces = self.geometry[model.id]
         transform = matrix(model.transform)
         return vertices @ transform[:3, :3].T + transform[:3, 3], faces
+
+    def set_colour_mode(self, mode):
+        self.colour_mode = mode
+        self.update()
+
+    def invalidate_geometry(self):
+        self.geometry.clear()
+        self.vertex_colors.clear()
+        self.textures.clear()
+
+    @staticmethod
+    def height_colors(z, low, high):
+        t = np.clip((z - low) / max(high - low, 1e-12), 0, 1)
+        stops = np.array([[35, 85, 230], [35, 210, 200], [80, 205, 75], [255, 215, 55], [225, 45, 40]])
+        return np.column_stack([np.interp(t, np.linspace(0, 1, 5), stops[:, i]) for i in range(3)])
 
     def frame_all(self):
         arrays = [self.transformed(m)[0] for m in self.models if m.visible and m.id in self.geometry]
@@ -143,6 +161,9 @@ class SceneCanvas(QWidget):
         triangles, points = [], []
         self.hit = []
         colors = ("#56cbb6", "#689ced", "#dcad72", "#b299ef")
+        heights = [self.transformed(m)[0][:, 2] for m in self.models if m.visible and m.id in self.geometry]
+        low = min((z.min() for z in heights), default=0.)
+        high = max((z.max() for z in heights), default=0.)
         for index, model in enumerate(self.models):
             if not model.visible or model.id not in self.geometry:
                 continue
@@ -150,8 +171,10 @@ class SceneCanvas(QWidget):
             screen, depth = self.project(vertices)
             color = QColor("#ffcb70" if model.id == self.selection else colors[index % len(colors)])
             rgb = self.vertex_colors.get(model.id)
+            if self.colour_mode != 'Texture':
+                rgb = self.height_colors(vertices[:, 2], low, high)
             if len(faces):
-                texture = self.textures.get(model.id)
+                texture = self.textures.get(model.id) if self.colour_mode == 'Texture' else None
                 mappings = texture[1] @ screen[faces] if texture else None
                 for face_index, face in enumerate(faces):
                     if np.any(depth[face] <= .05):
@@ -183,6 +206,8 @@ class SceneCanvas(QWidget):
             self.hit.append((depth, shape, key))
         painter.setPen(QColor("#a2b2c7"))
         painter.drawText(18, 27, "SCENE / CPU VIEWPORT")
+        if self.colour_mode != 'Texture':
+            painter.drawText(18, 48, f"Relative Z: blue {low:.3g} → red {high:.3g} | scene units; vertical unverified")
         painter.drawText(18, self.height() - 18, "Orbit: drag   •   Pan: right drag   •   Zoom: wheel   •   Select: click")
         if not self.models:
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Your scene starts here\nAnalyze your footage, then reconstruct with COLMAP")
