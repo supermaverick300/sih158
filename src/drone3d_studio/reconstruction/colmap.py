@@ -108,6 +108,18 @@ class ColmapBackend:
             progress(value, message)
         try:
             result = self._run(root, frames, cancel, tracking)
+            if self.work:
+                from drone3d_studio.reconstruction.confidence import attach_run
+                atomic_write(self.work/'metadata/frame-evidence.json', json.dumps([f.model_dump() for f in frames], indent=2))
+                try:
+                    tracking(-1, 'Measuring reconstruction evidence')
+                    attach_run(root,self.work,frames,result,cancel,lambda message:tracking(-1,message))
+                except Cancelled:
+                    raise
+                except Exception as exc:
+                    # Confidence failure must not destroy a completed reconstruction.
+                    atomic_write(self.work/'metadata/confidence.json',json.dumps({'version':1,'overall':{'score':None,'label':'N/A'},'error':str(exc)}))
+                    tracking(-1, f'Confidence unavailable: {exc}. Reconstruction outputs retained.')
             report["status"] = "Succeeded"
             report["units"] = "Local ENU metres" if self.pipeline.align_gps else "Arbitrary SfM units"
             if self.pipeline.depth_method == "MiDaS ONNX relief":
@@ -199,6 +211,7 @@ class ColmapBackend:
             if not outputs:
                 raise RuntimeError("COLMAP could not register a scene. A single translating pass is sufficient in principle, but this input needs sharper overlapping frames, usable parallax, or known camera calibration.")
             result = []
+            confidence_sources = {}
             for index, output in enumerate(outputs):
                 component = work / f"component-{index}"
                 component.mkdir()
@@ -207,6 +220,9 @@ class ColmapBackend:
                     output = align(output, component, accepted, executable, self.pipeline, cancel, log, run_command)
                 else:
                     log("GPS alignment skipped: output coordinates have arbitrary SfM scale.")
+                from drone3d_studio.persistence.store import reference
+                confidence_sources[str(index)] = reference(work,output)
+                atomic_write(work/'metadata/sources.json',json.dumps(confidence_sources,indent=2))
                 ply = work / f"sparse-{index}.ply"
                 run_command([executable, "model_converter", "--input_path", str(output), "--output_path", str(ply), "--output_type", "PLY"], cancel, log, work)
                 record, mesh = model_record(root, ply, "COLMAP")

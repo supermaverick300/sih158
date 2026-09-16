@@ -35,6 +35,13 @@ def main():
             def log(message):
                 print(message, flush=True); stream.write(message + '\n'); stream.flush()
             result = run_pipeline(root, dense, root / 'reconstruction/openmvs', config, cancel, log, run_command)
+            from drone3d_studio.reconstruction.confidence import attach_run
+            try:
+                attach_run(root,root/'reconstruction/openmvs',[],[result],cancel,log)
+            except Exception as exc:
+                if cancel.is_set():
+                    raise
+                log(f'Confidence unavailable: {exc}. Completed reconstruction retained.')
         project.models = [result[0]]
         project.status = 'Scene ready'
         project.reconstruction_status = 'Succeeded — textured OpenMVS mesh and three GLBs; original scale, georeference unverified'

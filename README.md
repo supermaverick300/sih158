@@ -1,5 +1,7 @@
 # Drone 3D Studio
 
+**Reconstruction Confidence:** the [evidence guide](docs/CONFIDENCE.md) explains the measured score, missing-data handling, separate GPS status, regional Confidence/Provenance overlays, camera visualization and how to audit the calculation. Existing reconstructions can be measured from Dashboard without reconstructing again. This is an engineering heuristic, not real-world accuracy.
+
 A locally runnable Windows desktop MVP for turning drone video into inspected frames and reconstructed 3D scenes. Built with Python, PySide6, OpenCV, NumPy, Pydantic and Trimesh. No accounts, cloud services or API keys. Sparse reconstruction and optional AI depth fusion run on CPU; COLMAP dense stereo requires a CUDA GPU.
 
 **New: [seven-stage setup and download guide](docs/PIPELINE_SETUP.md)** — adaptive sampling, frame quality, GPS keyframes, COLMAP SfM, local Depth Anything V2, verified ENU alignment and colored depth fusion. Includes exact settings, telemetry CSV requirements, actual validation results and limitations of the user's stock clip.

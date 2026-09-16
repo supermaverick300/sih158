@@ -1,5 +1,15 @@
 # Development validation
 
+## Reconstruction Confidence — September 16, 2026
+
+Implemented configurable evidence scores, N/A weight renormalization, separate telemetry/alignment status, deterministic explanations, binary COLMAP track/error readers, bounded neighboring-depth re-evaluation, AI calibration/fusion diagnostics, local sparse-evidence sidecars, confidence/provenance/wireframe overlays, camera/path markers and regional support inspection. New runs attach portable report references; older workspaces can be measured without reconstruction. No new neural network or geometry replacement was introduced.
+
+Final checks: **82 tests passed in 26.83 seconds**; `venv\Scripts\python main.py --smoke-test` exited **0**. Added 20 core evidence cases and one GUI integration test. They cover the required registration/normalization/missing-depth/GPS independence/AI provenance invariants, JSON/rebasing, parsing failures, cancellation, depth agreement, local N/A regions, shared LOD evidence and source mesh preservation. Existing reconstruction tests still pass.
+
+Ran `scripts/measure_confidence.py output/OpenMVS-Monument-Final` on the actual saved workspace: 65 cameras, 65,419 sparse points, 0.660736 px median stored point error, 6.229 mean track observations, and 52,837 agreeing / 61,072 evaluated sampled depth pairs. Score: **88.3303 / HIGH**, using 65% of nominal evidence weight. The historical accepted-frame denominator and frame quality are N/A; no current analysis was substituted. GPS scale remains unverified. OpenMVS counts/status are recorded without a completion bonus.
+
+The actual Qt Dashboard and Confidence overlay with camera/path markers were rendered and visually inspected (`output/confidence-dashboard.png`, `output/confidence-model.png`). Regional evidence is an approximation from sparse tracks, not a measurement of every mesh face. Native OpenMVS depth/texture coverage, surface-area provenance fractions, verified vertical coverage and capture overlap remain unavailable. No accuracy claim follows from this score. Exact formulas, configuration, file semantics and manual audit steps are in [CONFIDENCE.md](CONFIDENCE.md).
+
 ## Height colouring and viewer LOD controls — September 16, 2026
 
 Added texture/relative-Z colouring and explicit loading of existing OpenMVS low/medium/high GLBs. Higher LODs display all their faces rather than the old 12,000-face sampling cap. File references and transforms are preserved. Tests exercise finite colours for flat surfaces, blue/red endpoints, actual high-LOD loading above the cap, return to low detail and unchanged persisted source reference. **61 tests passed in 24.65 seconds**, startup smoke test exited **0**. The actual monument project was reopened and its relative-height screenshot inspected. These are display improvements, not geometric or geographic accuracy validation.

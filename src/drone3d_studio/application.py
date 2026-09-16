@@ -195,6 +195,16 @@ class Studio(QMainWindow):
         self.stats.setWordWrap(True)
         self.stats.setStyleSheet("font-size:15px;padding:20px;background:#1a2635;border-radius:9px")
         layout.addWidget(self.stats)
+        self.confidence_card = QLabel('Reconstruction Confidence: N/A')
+        self.confidence_card.setWordWrap(True)
+        layout.addWidget(self.confidence_card)
+        self.suitability_card = QLabel('Capture Suitability: N/A')
+        self.suitability_card.setWordWrap(True)
+        layout.addWidget(self.suitability_card)
+        self.metric_card = QLabel('Metric Status: Not verified')
+        self.metric_card.setWordWrap(True)
+        layout.addWidget(self.metric_card)
+        layout.addLayout(row(button('View details', self.confidence_details),button('Why this score?',self.confidence_explanation),button('Measure existing evidence',self.measure_confidence)))
         layout.addLayout(row(button("Import video", self.import_video, True), button("Analyze frames", self.start_analysis), button("Generate scene", self.reconstruct), button("Inspect scene", lambda: self.nav.setCurrentRow(4))))
         guidance = QLabel("Single-pass workflow: fly steadily over or past a static scene with overlapping sharp frames. No orbit is required. Camera translation supplies depth information; pure rotation does not. Only visible surfaces can be reconstructed.")
         guidance.setWordWrap(True)
@@ -263,13 +273,22 @@ class Studio(QMainWindow):
         self.views.currentTextChanged.connect(self.canvas.view)
         layout.addLayout(row(self.views, button("Frame all", self.canvas.frame_all), button("Face surface", self.canvas.face_surface), button("Reset camera", self.reset_camera)))
         self.surface_colours = QComboBox()
-        self.surface_colours.addItems(['Texture', 'Relative height'])
+        self.surface_colours.addItems(['Texture', 'Relative height', 'Confidence', 'Provenance', 'Wireframe'])
         self.surface_colours.currentTextChanged.connect(self.canvas.set_colour_mode)
         self.surface_detail = QComboBox()
         self.surface_detail.addItems(['Low', 'Medium', 'High'])
         self.surface_detail.setToolTip('Load the selected OpenMVS object’s exported LOD. High detail can slow the CPU viewer.')
         layout.addLayout(row(QLabel('Colours'), self.surface_colours, QLabel('Detail'), self.surface_detail,
                              button('Load detail', self.load_surface_detail)))
+        self.camera_toggle = QCheckBox('Show Cameras')
+        self.path_toggle = QCheckBox('Show Camera Path')
+        self.camera_toggle.toggled.connect(lambda value:self.toggle_evidence_camera('show_cameras',value))
+        self.path_toggle.toggled.connect(lambda value:self.toggle_evidence_camera('show_camera_path',value))
+        layout.addLayout(row(self.camera_toggle,self.path_toggle))
+        self.region_info=QLabel('Confidence uses sparse regional evidence; gray regions have insufficient evidence.')
+        self.region_info.setWordWrap(True)
+        layout.addWidget(self.region_info)
+        self.canvas.region_selected.connect(self.region_info.setText)
         split = QSplitter()
         split.addWidget(self.canvas)
         panel = QWidget()
@@ -313,6 +332,113 @@ class Studio(QMainWindow):
         self.json_view.setReadOnly(True)
         self.json_view.setStyleSheet("font-family:Consolas;font-size:12px")
         layout.addWidget(self.json_view)
+
+    def toggle_evidence_camera(self, name, value):
+        setattr(self.canvas,name,value)
+        self.canvas.update()
+
+    def refresh_confidence(self):
+        from drone3d_studio.reconstruction.confidence import capture_suitability, load_sidecar
+        if not hasattr(self,'confidence_cache'):
+            self.confidence_cache={}
+        self.current_confidence=None
+        self.canvas.evidence={}
+        if not self.project:
+            self.confidence_card.setText('Reconstruction Confidence: N/A')
+            self.suitability_card.setText('Capture Suitability: N/A')
+            self.metric_card.setText('Metric Status: Not verified')
+            return
+        suitability=capture_suitability(self.project.frames)
+        score=suitability['score']
+        self.suitability_card.setText(f"Capture Suitability: {score:.1f}/100" if score is not None else 'Capture Suitability: N/A')
+        duplicate=suitability['duplicate_ratio']
+        if suitability['sampled_frames']:
+            self.suitability_card.setText(self.suitability_card.text()+f" · {suitability['accepted_frames']}/{suitability['sampled_frames']} accepted · duplicates {duplicate:.1%} · overlap N/A")
+        self.suitability_card.setToolTip(f"Existing accepted-frame quality heuristic. {suitability['accepted_frames']}/{suitability['sampled_frames']} accepted. Overlap prediction: N/A.")
+        for model in self.project.models:
+            if not model.confidence_path:
+                continue
+            path=store.resolve(self.root,model.confidence_path)
+            try:
+                key=(str(path),path.stat().st_mtime_ns)
+                if key not in self.confidence_cache:
+                    if len(self.confidence_cache)>30:
+                        self.confidence_cache.clear()
+                    self.confidence_cache[key]=load_sidecar(path)
+                self.canvas.evidence[model.id]=self.confidence_cache[key]
+            except (OSError,ValueError,KeyError):
+                continue
+        selected=self.selected_model()
+        candidates=[selected] if selected else [m for m in self.project.models if m.visible]
+        for model in reversed(candidates):
+            if model and model.id in self.canvas.evidence:
+                self.current_confidence=self.canvas.evidence[model.id][0]
+                break
+        report=self.current_confidence
+        if report is None:
+            self.confidence_card.setText('Reconstruction Confidence: N/A — measure existing evidence or reconstruct. Gray overlay means insufficient evidence.')
+            self.metric_card.setText('Metric Status: No associated alignment evidence; scale unverified.')
+            return
+        overall=report['overall']; c=report['components']; r=c['registration']; e=c['reprojection']
+        fmt=lambda x: 'N/A' if x is None else f'{x:.1%}'
+        score='N/A' if overall['score'] is None else f"{overall['score']:.1f}/100 · {overall['label']}"
+        error='N/A' if e.get('median_px') is None else f"{e['median_px']:.3f} px"
+        warnings=' '.join(report['warnings'][:2])+(' More warnings in View details.' if len(report['warnings'])>2 else '')
+        self.confidence_card.setText(f"Reconstruction Confidence: {score} (component evidence heuristic; {overall['available_weight']:.0%} of default evidence weight available)\nRegistration: {r['registered_frames']}/{r['accepted_frames'] or 'N/A'} · Median error: {error}\nMulti-view: {fmt(c['multi_view']['score'])} · Depth agreement: {fmt(c['depth_consistency']['score'])} · {report['provenance']['model_class']}\n"+warnings)
+        metric=report['metric_status']
+        self.metric_card.setText(f"Metric Status: GPS {metric['telemetry']} · {metric['alignment']} · {metric['scale']}\n{metric['warning']}")
+        if metric['median_residual_m'] is not None:
+            self.metric_card.setText(self.metric_card.text()+f" Median alignment residual: {metric['median_residual_m']:.3f} m.")
+
+    def confidence_details(self):
+        from drone3d_studio.reconstruction.confidence import capture_suitability
+        report=self.current_confidence if hasattr(self,'current_confidence') else None
+        data=report or {'reconstruction_confidence':'N/A','capture_suitability':capture_suitability(self.project.frames if self.project else [])}
+        dialog=QMessageBox(self)
+        dialog.setWindowTitle('Reconstruction Confidence — raw evidence')
+        dialog.setText('Engineering evidence heuristic, not measured accuracy. Expand details for raw values, formula, configuration, warnings and sources. null means N/A.')
+        dialog.setDetailedText(json.dumps(data,indent=2))
+        dialog.exec()
+
+    def confidence_explanation(self):
+        report=getattr(self,'current_confidence',None)
+        QMessageBox.information(self,'Why this score?',report['explanation'] if report else 'No associated reconstruction evidence report. Capture suitability alone is not reconstruction confidence.')
+
+    def measure_confidence(self):
+        if not self.require_project() or not self.idle():
+            return
+        from drone3d_studio.reconstruction.confidence import attach_run
+        from drone3d_studio.domain.models import Frame
+        groups={}
+        for model in self.project.models:
+            if model.origin not in ('COLMAP','OpenMVS','Depth Anything V2','MiDaS estimated relief'):
+                continue
+            path=store.resolve(self.root,model.path)
+            try:
+                relative=path.relative_to(self.root/'reconstruction')
+            except ValueError:
+                continue
+            if len(relative.parts)>=2:
+                work=self.root/'reconstruction'/relative.parts[0]
+                groups.setdefault(work,[]).append((model.model_copy(deep=True),None))
+        if not groups:
+            self.error('No associated reconstruction workspace found. Imported meshes alone do not contain camera/track evidence.')
+            return
+        def measure(cancel,progress):
+            records=[]
+            for work,result in groups.items():
+                snapshot=work/'metadata/frame-evidence.json'
+                frames=[Frame.model_validate(f) for f in json.loads(snapshot.read_text(encoding='utf-8'))] if snapshot.is_file() else []
+                attach_run(self.root,work,frames,result,cancel,lambda text:progress(-1,text))
+                records.extend(m for m,_ in result)
+            return records
+        def done(records):
+            by_id={m.id:m for m in records}
+            for model in self.project.models:
+                if model.id in by_id:
+                    model.confidence_path=by_id[model.id].confidence_path
+            self.changed()
+        self.run_job(measure,done)
 
     def load_surface_detail(self):
         if not self.project or self.job is not None:
@@ -720,6 +846,7 @@ class Studio(QMainWindow):
             self.frames.clear()
             self.json_view.clear()
         self.canvas.set_scene(project.models if project else [], self.meshes)
+        self.refresh_confidence()
         self.loading = False
         self.update_properties()
 

@@ -100,6 +100,7 @@ class Transform(Record):
 
 
 class Model(Record):
+    confidence_path: str = ''
     id: str = Field(default_factory=lambda: uuid4().hex)
     name: str = Field(min_length=1, max_length=200)
     path: str

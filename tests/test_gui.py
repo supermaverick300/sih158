@@ -7,6 +7,41 @@ from drone3d_studio.persistence.autosave import Autosave
 from drone3d_studio.services import meshes, video
 
 
+def test_confidence_modes_preserve_mesh_and_reports(qtbot,tmp_path):
+    import numpy as np
+    import trimesh
+    from drone3d_studio.reconstruction.confidence import write_grid, build_report
+    from drone3d_studio.domain.models import Model
+    from drone3d_studio.persistence.store import atomic_write
+    import json
+    root=tmp_path/'evidence';project=store.create(root,'Evidence UI')
+    mesh=trimesh.creation.box()
+    mesh.export(root/'mesh.ply')
+    data=dict(cameras={1:dict(name='a',center=np.array([0,0,3]),R=np.eye(3),keypoints=8,observations=8)},
+              xyz=np.array(mesh.vertices),errors=np.full(8,.5),counts=np.full(8,5),ids=np.arange(8),tracks=[np.array([1])]*8)
+    metadata=root/'reconstruction/run/metadata';metadata.mkdir(parents=True)
+    report=build_report(data,[],provenance='AI_ASSISTED')
+    atomic_write(metadata/'confidence.json',json.dumps(report))
+    write_grid(metadata/'local-confidence.npz',data)
+    project.models.append(Model(name='AI surface',path='mesh.ply',format='PLY',vertices=8,faces=12,origin='Depth Anything V2',confidence_path='reconstruction/run/metadata/confidence.json'))
+    window=Studio();qtbot.addWidget(window);window.activate(root,project)
+    qtbot.waitUntil(lambda:window.job is None,timeout=10000)
+    source=(root/'mesh.ply').read_bytes()
+    window.nav.setCurrentRow(4)
+    for mode in ('Confidence','Provenance','Wireframe','Texture'):
+        window.surface_colours.setCurrentText(mode)
+        assert not window.canvas.grab().isNull()
+    assert (root/'mesh.ply').read_bytes()==source
+    assert 'AI_ASSISTED' in window.confidence_card.text()
+    assert 'N/A' in window.confidence_card.text()  # Missing frame denominator remains visible.
+    window.surface_colours.setCurrentText('Confidence');window.canvas.grab()
+    assert window.canvas.region_hits
+    window.camera_toggle.setChecked(True);window.path_toggle.setChecked(True)
+    assert window.canvas.show_cameras and window.canvas.show_camera_path
+    window.canvas.grab()
+    window.close()
+
+
 def test_height_colours_and_actual_lod_loading(qtbot, tmp_path):
     import numpy as np
     import trimesh

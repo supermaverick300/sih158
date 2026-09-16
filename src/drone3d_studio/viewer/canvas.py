@@ -13,6 +13,7 @@ from drone3d_studio.services.meshes import matrix
 
 class SceneCanvas(QWidget):
     selected = Signal(str)
+    region_selected = Signal(str)
     nudge = Signal(int, float)
 
     def __init__(self, parent=None):
@@ -25,6 +26,10 @@ class SceneCanvas(QWidget):
         self.textures = {}
         self.colour_mode = 'Texture'
         self.face_limit = 12000
+        self.evidence = {}
+        self.show_cameras = False
+        self.show_camera_path = False
+        self.region_hits = {}
 
         self.selection = ""
         self.background = "#101923"
@@ -83,6 +88,14 @@ class SceneCanvas(QWidget):
     def set_colour_mode(self, mode):
         self.colour_mode = mode
         self.update()
+
+    @staticmethod
+    def confidence_colors(scores):
+        rgb = np.full((len(scores), 3), 135., dtype=float)
+        valid = np.isfinite(scores)
+        for i, stops in enumerate(([220,245,45], [55,210,195], [50,55,85])):
+            rgb[valid, i] = np.interp(scores[valid], [0,.5,1], stops)
+        return rgb
 
     def invalidate_geometry(self):
         self.geometry.clear()
@@ -160,6 +173,7 @@ class SceneCanvas(QWidget):
             line((0, 0, 0), axis, color)
         triangles, points = [], []
         self.hit = []
+        self.region_hits = {}
         colors = ("#56cbb6", "#689ced", "#dcad72", "#b299ef")
         heights = [self.transformed(m)[0][:, 2] for m in self.models if m.visible and m.id in self.geometry]
         low = min((z.min() for z in heights), default=0.)
@@ -171,8 +185,17 @@ class SceneCanvas(QWidget):
             screen, depth = self.project(vertices)
             color = QColor("#ffcb70" if model.id == self.selection else colors[index % len(colors)])
             rgb = self.vertex_colors.get(model.id)
-            if self.colour_mode != 'Texture':
+            region_scores = region_support = None
+            if self.colour_mode == 'Relative height':
                 rgb = self.height_colors(vertices[:, 2], low, high)
+            elif self.colour_mode in ('Confidence','Provenance'):
+                from drone3d_studio.reconstruction.confidence import sample_grid
+                report, grid = self.evidence.get(model.id, ({},None))
+                scores,region_support = sample_grid(grid,self.geometry[model.id][0]) if grid is not None else (np.full(len(vertices),np.nan),np.zeros(len(vertices)))
+                region_scores=scores
+                rgb = self.confidence_colors(scores)
+                if self.colour_mode=='Provenance' and (report.get('provenance',{}).get('model_class')=='AI_ASSISTED' or model.origin in ('Depth Anything V2','MiDaS estimated relief')):
+                    rgb[:] = [170,85,220]
             if len(faces):
                 texture = self.textures.get(model.id) if self.colour_mode == 'Texture' else None
                 mappings = texture[1] @ screen[faces] if texture else None
@@ -180,10 +203,14 @@ class SceneCanvas(QWidget):
                     if np.any(depth[face] <= .05):
                         continue
                     polygon = QPolygonF([QPointF(*p) for p in screen[face]])
+                    if region_scores is not None:
+                        known=np.isfinite(region_scores[face])
+                        summary=(f"Sparse regional evidence: {np.mean(region_scores[face][known]):.0%}; mean track support {np.mean(region_support[face][known]):.1f} views" if known.any() else 'Insufficient regional evidence (N/A)')
+                        self.region_hits[(model.id,id(polygon))]=summary+' — spatial approximation, not observations of this triangle.'
                     if rgb is not None:
                         color = QColor(*map(int, rgb[face, :3].mean(axis=0)))
                     normal = np.cross(vertices[face[1]] - vertices[face[0]], vertices[face[2]] - vertices[face[0]])
-                    shade = 1.0 if model.origin == "MiDaS estimated relief" else .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
+                    shade = 1.0 if model.origin == "MiDaS estimated relief" or self.colour_mode in ('Confidence','Provenance') else .55 + .45 * abs(float(normal @ np.array([.3, .4, .85]))) / max(np.linalg.norm(normal), 1e-9)
                     tint = QColor.fromRgbF(min(1, color.redF() * shade), min(1, color.greenF() * shade), min(1, color.blueF() * shade))
                     mapping = mappings[face_index] if texture and texture[2][face_index] else None
                     triangles.append((float(depth[face].mean()), polygon, tint, model.id, mapping))
@@ -198,7 +225,7 @@ class SceneCanvas(QWidget):
                     painter.setBrush(brush)
                 else:
                     painter.setPen(QPen(color, .6))
-                    painter.setBrush(color)
+                    painter.setBrush(Qt.BrushStyle.NoBrush if self.colour_mode == 'Wireframe' else color)
                 painter.drawPolygon(shape)
             else:
                 painter.setPen(QPen(color, 3))
@@ -206,8 +233,35 @@ class SceneCanvas(QWidget):
             self.hit.append((depth, shape, key))
         painter.setPen(QColor("#a2b2c7"))
         painter.drawText(18, 27, "SCENE / CPU VIEWPORT")
-        if self.colour_mode != 'Texture':
+        if self.colour_mode == 'Relative height':
             painter.drawText(18, 48, f"Relative Z: blue {low:.3g} → red {high:.3g} | scene units; vertical unverified")
+        elif self.colour_mode in ('Confidence','Provenance'):
+            painter.drawText(18,48,'Sparse regional evidence: red low · yellow medium · green high · gray N/A')
+            if self.colour_mode=='Provenance':
+                painter.drawText(18,68,'Purple: AI-assisted (independent of score)')
+        if self.show_cameras or self.show_camera_path:
+            for model in self.models:
+                if not model.visible:
+                    continue
+                _, grid = self.evidence.get(model.id, ({},None))
+                if grid is None:
+                    continue
+                transform = matrix(model.transform)
+                centers = grid['cameras'] @ transform[:3,:3].T + transform[:3,3]
+                projected, depths = self.project(centers)
+                if self.show_camera_path:
+                    for i in range(1,len(centers)):
+                        if min(depths[i-1:i+1])>.05:
+                            painter.setPen(QPen(QColor('#ffad65'),1))
+                            painter.drawLine(QPointF(*projected[i-1]),QPointF(*projected[i]))
+                if self.show_cameras:
+                    tips = centers + (grid['camera_directions'] @ transform[:3,:3].T) * self.distance * .015
+                    for center,tip,point,d in zip(centers,tips,projected,depths):
+                        if d>.05:
+                            painter.setPen(QPen(QColor('#79ddff'),2))
+                            painter.setBrush(Qt.BrushStyle.NoBrush)
+                            painter.drawEllipse(QPointF(*point),3,3)
+                            line(center,tip,'#79ddff')
         painter.drawText(18, self.height() - 18, "Orbit: drag   •   Pan: right drag   •   Zoom: wheel   •   Select: click")
         if not self.models:
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Your scene starts here\nAnalyze your footage, then reconstruct with COLMAP")
@@ -237,6 +291,7 @@ class SceneCanvas(QWidget):
             for _, shape, key in sorted(self.hit, key=lambda x: x[0]):
                 match = shape.containsPoint(event.position(), Qt.FillRule.OddEvenFill) if isinstance(shape, QPolygonF) else (shape - event.position()).manhattanLength() < 7
                 if match:
+                    self.region_selected.emit(self.region_hits.get((key,id(shape)),'Select a region in Confidence or Provenance mode to inspect sparse support.'))
                     self.selected.emit(key)
                     break
         self.last = None

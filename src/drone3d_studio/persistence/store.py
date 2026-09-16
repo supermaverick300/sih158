@@ -92,6 +92,8 @@ def import_json(path: Path, root: Path) -> Project:
         project.video.path = reference(root, resolve(path.parent, project.video.path))
     for model in project.models:
         model.path = reference(root, resolve(path.parent, model.path))
+        if model.confidence_path:
+            model.confidence_path = reference(root, resolve(path.parent, model.confidence_path))
     for frame in project.frames:
         frame.path = reference(root, resolve(path.parent, frame.path))
         frame.thumbnail = reference(root, resolve(path.parent, frame.thumbnail))
@@ -106,6 +108,8 @@ def export_json(path: Path, root: Path, project: Project):
         copy.video.path = reference(path.parent, resolve(root, copy.video.path))
     for model in copy.models:
         model.path = reference(path.parent, resolve(root, model.path))
+        if model.confidence_path:
+            model.confidence_path = reference(path.parent, resolve(root, model.confidence_path))
     for frame in copy.frames:
         frame.path = reference(path.parent, resolve(root, frame.path))
         frame.thumbnail = reference(path.parent, resolve(root, frame.thumbnail))

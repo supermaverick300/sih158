@@ -79,8 +79,9 @@ def calibrate_inverse_depth(relative, pixels, depths):
     return depth, {"a": float(a), "b": float(b), "anchors": int(mask.sum()), "median_relative_inverse_error": error}
 
 
-def consistent_points(world, views, current, maps, intrinsics):
+def consistent_support(world, views, current, maps, intrinsics):
     counts = np.zeros(len(world), dtype=int)
+    evaluated = np.zeros(len(world), dtype=int)
     neighbors = sorted([i for i in range(len(views)) if i != current], key=lambda i: np.linalg.norm(views[i].center - views[current].center))[:4]
     for i in neighbors:
         other = views[i]
@@ -92,13 +93,20 @@ def consistent_points(world, views, current, maps, intrinsics):
         valid = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
         indices = np.flatnonzero(valid)
         measured = maps[i][v[indices], u[indices]]
+        evaluated[indices] += np.isfinite(measured) & (measured > 0)
         counts[indices] += (measured > 0) & (np.abs(measured - z[indices]) / np.maximum(z[indices], 1e-9) < .08)
-    return counts >= min(2, len(neighbors))
+    return counts, evaluated, len(neighbors)
+
+
+def consistent_points(world, views, current, maps, intrinsics):
+    counts, _, neighbors = consistent_support(world, views, current, maps, intrinsics)
+    return counts >= min(2, neighbors)
 
 
 def fuse(views, depth_paths, images, intrinsics, output, config, cancel, progress):
     maps = [np.load(path, mmap_mode="r") for path in depth_paths]
     voxels = {}
+    evaluated_samples = surviving_samples = 0
     try:
         for i, view in enumerate(views):
             if cancel.is_set():
@@ -112,6 +120,8 @@ def fuse(views, depth_paths, images, intrinsics, output, config, cancel, progres
             camera = np.column_stack(((xx - cx) / fx * z, (yy - cy) / fy * z, z))
             world = (camera - view.t) @ view.R
             keep = consistent_points(world, views, i, maps, intrinsics)
+            evaluated_samples += len(keep)
+            surviving_samples += int(keep.sum())
             rgb = cv2.cvtColor(cv2.imdecode(np.fromfile(str(images / view.name), np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
             colors = rgb[yy, xx]
             for point, color in zip(world[keep], colors[keep]):
@@ -134,6 +144,9 @@ def fuse(views, depth_paths, images, intrinsics, output, config, cancel, progres
     array = np.array(list(voxels.values()))
     cloud = trimesh.points.PointCloud(array[:, :3] / array[:, 6:7], colors=np.clip(array[:, 3:6] / array[:, 6:7], 0, 255).astype(np.uint8))
     cloud.export(str(output))
+    atomic_write(output.parent/'fusion-evidence.json',json.dumps(dict(evaluated_samples=evaluated_samples,
+        surviving_samples=surviving_samples,survival_ratio=surviving_samples/evaluated_samples if evaluated_samples else None,
+        semantics='Pre-voxel depth samples passing existing multi-view filter; not a unique surface-area fraction'),indent=2))
     return len(cloud.vertices)
 
 

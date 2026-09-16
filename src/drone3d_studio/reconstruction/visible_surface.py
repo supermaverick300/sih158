@@ -43,6 +43,7 @@ def build_surface(views, maps, images, intrinsics, output, stride, cancel, progr
     if len(views) < 3:
         raise ValueError("A single pass needs at least three overlapping registered frames with depth.")
     vertices, colors, faces, count = [], [], [], 0
+    evaluated_samples = surviving_samples = 0
     for i, view in enumerate(views):
         if cancel.is_set():
             raise Cancelled("Visible-surface reconstruction cancelled")
@@ -58,6 +59,8 @@ def build_surface(views, maps, images, intrinsics, output, stride, cancel, progr
         support = np.zeros(valid.size,dtype=bool)
         ids = np.flatnonzero(valid.ravel())
         support[ids] = consistent_points(world[ids],views,i,maps,intrinsics)
+        evaluated_samples += len(ids)
+        surviving_samples += int(support.sum())
         triangles = grid_faces(safe,support.reshape(z.shape))
         if not len(triangles):
             continue
@@ -77,6 +80,9 @@ def build_surface(views, maps, images, intrinsics, output, stride, cancel, progr
     mesh = trimesh.Trimesh(vertices=np.concatenate(vertices),faces=np.concatenate(faces),vertex_colors=np.concatenate(colors),process=False)
     # Independent view patches preserve openings; no watertightness or completion claim.
     mesh.export(str(output))
+    atomic_write(output.parent/'fusion-evidence.json',json.dumps(dict(evaluated_samples=evaluated_samples,
+        surviving_samples=surviving_samples,survival_ratio=surviving_samples/evaluated_samples if evaluated_samples else None,
+        semantics='Valid depth samples passing existing multi-view filter before triangulation; not a surface-area fraction'),indent=2))
     atomic_write(output.with_suffix(".json"),json.dumps({"capture":"Single pass","surface":"Observed depth patches","vertices":len(mesh.vertices),"faces":len(mesh.faces),"registered_depth_views":len(views),"pixel_stride":stride,"neighbor_depth_tolerance":.08,"unseen_surfaces":"Not generated","limitations":"Overlapping patches can remain; boundaries and depth discontinuities remain open. Colors are sampled from the video, not a texture atlas."},indent=2))
     return output
 
