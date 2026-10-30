@@ -1,4 +1,4 @@
-# Drone 3D Studio
+# Elysian 3D
 
 **Reconstruction Confidence:** the [evidence guide](docs/CONFIDENCE.md) explains the measured score, missing-data handling, separate GPS status, regional Confidence/Provenance overlays, camera visualization and how to audit the calculation. Existing reconstructions can be measured from Dashboard without reconstructing again. This is an engineering heuristic, not real-world accuracy.
 
